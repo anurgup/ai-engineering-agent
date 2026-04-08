@@ -50,9 +50,12 @@ export async function readMemory(state: AgentState): Promise<Partial<AgentState>
     return { memoryContext: [], currentStep: "readMemory", logs: ["Memory index empty"] };
   }
 
-  // ── Semantic search ─────────────────────────────────────────────────────────
+  // ── Semantic search — reuse query embedding from readNotion if available ────
   const query  = buildQuery(state);
-  const vector = await embedText(query);
+  const vector = state.queryEmbedding ?? await embedText(query);
+  if (state.queryEmbedding) {
+    console.log(`[readMemory] Reusing query embedding from readNotion (saves one API call)`);
+  }
   const hits   = memStore.search(vector, TOP_K);
   const relevant = hits.filter((h) => h.score >= MIN_SCORE);
 

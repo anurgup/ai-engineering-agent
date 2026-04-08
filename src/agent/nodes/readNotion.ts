@@ -59,8 +59,9 @@ export async function readNotion(state: AgentState): Promise<Partial<AgentState>
   }
 
   return {
-    notionContext: pages,
-    currentStep:  "readNotion",
+    notionContext:  pages,
+    queryEmbedding: queryVector, // ← reused by readMemory — saves one Voyage API call
+    currentStep:   "readNotion",
     logs: [`Notion RAG search returned ${pages.length} pages`],
   };
 }

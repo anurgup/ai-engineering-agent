@@ -94,6 +94,11 @@ export const AgentStateAnnotation = Annotation.Root({
     default: () => [],
     reducer: (_, next) => next,
   }),
+  // Shared query embedding — computed once in readNotion, reused in readMemory
+  queryEmbedding: Annotation<number[] | undefined>({
+    default: () => undefined,
+    reducer: (_, next) => next,
+  }),
   classification: Annotation<IssueClassification | undefined>({
     default: () => undefined,
     reducer: (_, next) => next,
