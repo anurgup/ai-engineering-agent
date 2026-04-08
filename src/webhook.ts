@@ -10,7 +10,8 @@ import { buildGraph } from "./agent/graph.js";
 const app = express();
 app.use(express.json());
 
-const PORT = parseInt(process.env.WEBHOOK_PORT ?? "3000", 10);
+// Railway injects PORT dynamically — always prefer it over WEBHOOK_PORT
+const PORT = parseInt(process.env.PORT ?? process.env.WEBHOOK_PORT ?? "3000", 10);
 const SECRET = process.env.WEBHOOK_SECRET ?? "";
 
 // GitHub issue actions that should trigger the agent
