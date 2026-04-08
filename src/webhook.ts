@@ -7,32 +7,52 @@ import express, { Request, Response } from "express";
 import * as crypto from "crypto";
 import { buildGraph } from "./agent/graph.js";
 
+// Extend Request to carry the raw body buffer for HMAC verification
+interface RawRequest extends Request {
+  rawBody?: Buffer;
+}
+
 const app = express();
-app.use(express.json());
 
 // Railway injects PORT dynamically — always prefer it over WEBHOOK_PORT
-const PORT = parseInt(process.env.PORT ?? process.env.WEBHOOK_PORT ?? "3000", 10);
+const PORT   = parseInt(process.env.PORT ?? process.env.WEBHOOK_PORT ?? "3000", 10);
 const SECRET = process.env.WEBHOOK_SECRET ?? "";
 
 // GitHub issue actions that should trigger the agent
 const TRIGGER_ACTIONS = new Set(["opened", "reopened"]);
 
-function validateSignature(req: Request): boolean {
-  if (!SECRET) return true; // Skip validation if no secret configured
+// Capture raw body BEFORE JSON parsing — GitHub HMAC is computed on raw bytes
+app.use(
+  express.json({
+    verify: (req: RawRequest, _res, buf) => {
+      req.rawBody = buf;
+    },
+  })
+);
+
+function validateSignature(req: RawRequest): boolean {
+  if (!SECRET) return true; // skip if no secret configured
 
   const signature = req.headers["x-hub-signature-256"] as string | undefined;
   if (!signature) return false;
 
-  const hmac = crypto.createHmac("sha256", SECRET);
-  hmac.update(JSON.stringify(req.body));
+  // Must use raw bytes — JSON.stringify would produce a different hash
+  const payload = req.rawBody ?? Buffer.from(JSON.stringify(req.body));
+  const hmac    = crypto.createHmac("sha256", SECRET);
+  hmac.update(payload);
   const expected = `sha256=${hmac.digest("hex")}`;
 
-  return crypto.timingSafeEqual(Buffer.from(signature), Buffer.from(expected));
+  try {
+    return crypto.timingSafeEqual(Buffer.from(signature), Buffer.from(expected));
+  } catch {
+    return false;
+  }
 }
 
-// GitHub Issues webhook (from GitHub repo settings → Webhooks)
-app.post("/webhook/github", async (req: Request, res: Response) => {
+// GitHub Issues webhook
+app.post("/webhook/github", async (req: RawRequest, res: Response) => {
   if (!validateSignature(req)) {
+    console.warn(`[webhook] ⚠ Invalid signature — request rejected`);
     res.status(401).json({ error: "Invalid signature" });
     return;
   }
@@ -43,9 +63,9 @@ app.post("/webhook/github", async (req: Request, res: Response) => {
     return;
   }
 
-  const action: string = req.body.action ?? "";
+  const action: string      = req.body.action ?? "";
   const issueNumber: number = req.body.issue?.number;
-  const issueTitle: string = req.body.issue?.title ?? "";
+  const issueTitle: string  = req.body.issue?.title ?? "";
 
   console.log(`\n[webhook] GitHub Issues event: action="${action}" | Issue #${issueNumber}`);
 
@@ -54,12 +74,12 @@ app.post("/webhook/github", async (req: Request, res: Response) => {
     return;
   }
 
-  // Acknowledge immediately, run agent async
+  // Acknowledge immediately — run agent async
   res.json({ accepted: true, issueNumber });
 
   console.log(`\n🤖 AI Engineering Agent`);
   console.log(`   Issue:  #${issueNumber} — ${issueTitle}`);
-  console.log(`   Mode:   Webhook\n`);
+  console.log(`   Mode:   Webhook (Railway)\n`);
 
   const graph = buildGraph();
 
@@ -76,7 +96,7 @@ app.get("/health", (_req: Request, res: Response) => {
 });
 
 app.listen(PORT, () => {
-  console.log(`\n🤖 AI Engineering Agent — Webhook Mode`);
+  console.log(`\n🤖 AI Engineering Agent — Webhook Mode (Railway)`);
   console.log(`   Listening on port ${PORT}`);
   console.log(`   Endpoint: POST /webhook/github`);
   console.log(`   Health:   GET  /health\n`);
