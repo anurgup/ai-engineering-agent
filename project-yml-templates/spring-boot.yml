@@ -1,0 +1,22 @@
+# AI Engineering Agent — Project Configuration (Java / Spring Boot)
+# Copy this file to your repo root as: project.yml
+
+language: java
+framework: spring-boot
+build_tool: maven
+test_framework: junit
+database: postgresql
+package_manager: maven
+
+conventions:
+  - Use constructor injection (not field injection) for Spring beans
+  - Repository layer extends JpaRepository or CrudRepository
+  - Service classes annotated with @Service, controllers with @RestController
+  - All REST endpoints under /api/* prefix
+  - DTOs are plain POJOs — no JPA annotations on them
+  - Entity classes use @Entity, @Table, @Id
+  - Return ResponseEntity<T> from controller methods
+  - Use @Valid for request body validation with Jakarta Bean Validation annotations
+  - Global exception handling via @ControllerAdvice + @ExceptionHandler
+  - Follow existing package structure: com.example.<module>.{controller,service,repository,model,dto}
+  - Unit tests with @SpringBootTest or @WebMvcTest + Mockito

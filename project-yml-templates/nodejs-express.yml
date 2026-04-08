@@ -1,0 +1,21 @@
+# AI Engineering Agent — Project Configuration (Node.js / Express)
+# Copy this file to your repo root as: project.yml
+
+language: node
+framework: express
+build_tool: npm
+test_framework: jest
+database: postgresql
+package_manager: npm
+
+conventions:
+  - TypeScript throughout — no plain JS files in src/
+  - Async/await for all async operations — no callbacks
+  - Routes in src/routes/, controllers in src/controllers/, services in src/services/
+  - Validation via zod or express-validator (follow existing pattern)
+  - Database access via Prisma or pg (follow existing pattern)
+  - Errors thrown as custom AppError class, caught by global Express error middleware
+  - Environment variables via process.env with dotenv; never hardcoded
+  - Jest + supertest for integration tests in __tests__/ or *.spec.ts
+  - Return consistent JSON: { data: ..., message: "...", success: true/false }
+  - HTTP status codes: 200 OK, 201 Created, 400 Bad Request, 404 Not Found, 500 Server Error

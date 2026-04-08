@@ -1,0 +1,21 @@
+# AI Engineering Agent — Project Configuration (React Native)
+# Copy this file to your repo root as: project.yml
+
+language: react-native
+framework: expo
+build_tool: npm
+test_framework: jest
+package_manager: npm
+
+conventions:
+  - Functional components only — no class components
+  - TypeScript interfaces for all component props (defined above each component)
+  - useState / useEffect / useCallback / useMemo hooks
+  - Navigation via React Navigation (useNavigation, useRoute hooks)
+  - StyleSheet.create() for all styles — no inline style objects
+  - Screens in src/screens/, reusable components in src/components/
+  - API calls via custom hooks in src/hooks/ using axios or fetch
+  - Global state via Redux Toolkit or Zustand (follow existing pattern)
+  - Platform-specific code via Platform.OS === 'ios' or .ios.tsx / .android.tsx
+  - All async operations wrapped in try/catch with user-facing error handling
+  - No hardcoded strings — use i18n or constants file

@@ -1,0 +1,21 @@
+# AI Engineering Agent — Project Configuration (Python / FastAPI)
+# Copy this file to your repo root as: project.yml
+
+language: python
+framework: fastapi
+build_tool: pip
+test_framework: pytest
+database: postgresql
+package_manager: pip
+
+conventions:
+  - Use async def for all route handlers
+  - Pydantic BaseModel for all request/response schemas — never raw dicts
+  - SQLAlchemy 2.x ORM with async session (AsyncSession)
+  - Alembic for database migrations
+  - Route files in app/routers/, models in app/models/, schemas in app/schemas/
+  - Database session injected via Depends(get_db)
+  - HTTP exceptions raised with HTTPException(status_code=..., detail=...)
+  - Tests in tests/ using pytest-asyncio and httpx AsyncClient
+  - All environment variables loaded via python-dotenv or pydantic BaseSettings
+  - Type hints required on all function signatures
