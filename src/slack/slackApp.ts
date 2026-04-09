@@ -95,14 +95,20 @@ export function mountSlackOnExpress(expressApp: Express): void {
 
 function registerHandlers(app: App): void {
   // @mention in a channel
-  app.event("app_mention", async ({ event, say }) => {
-    const userId = event.user ?? "unknown";
-    const channelId = event.channel;
+  app.event("app_mention", async ({ event, say, ack }) => {
+    // Acknowledge immediately to avoid Slack's 3s timeout
+    if (typeof ack === "function") await (ack as () => Promise<void>)();
+
+    const userId  = event.user ?? "unknown";
+    const channel = event.channel;
     const rawText = stripMention(event.text ?? "").trim();
 
     console.log(`[slack] @mention from ${userId}: "${rawText.slice(0, 80)}"`);
 
-    const session = getOrCreateSession(userId, channelId);
+    // Show typing indicator while processing
+    await say({ text: "_Thinking..._", thread_ts: event.ts });
+
+    const session = getOrCreateSession(userId, channel);
     const reply   = await routeMessage(session, rawText);
 
     await say({ text: slackFormat(reply), thread_ts: event.ts });
@@ -113,7 +119,6 @@ function registerHandlers(app: App): void {
     // Filter to only user messages (not bot messages)
     if (message.subtype !== undefined) return;
 
-    // TypeScript: message.text exists on regular messages
     const msg     = message as { user?: string; channel?: string; text?: string; ts?: string };
     const userId  = msg.user    ?? "unknown";
     const channel = msg.channel ?? "unknown";
@@ -123,10 +128,13 @@ function registerHandlers(app: App): void {
 
     console.log(`[slack] DM from ${userId}: "${rawText.slice(0, 80)}"`);
 
+    // Show typing indicator while processing
+    await say({ text: "_Thinking..._" });
+
     const session = getOrCreateSession(userId, channel);
     const reply   = await routeMessage(session, rawText);
 
-    await say({ text: slackFormat(reply), thread_ts: msg.ts });
+    await say({ text: slackFormat(reply) });
   });
 }
 
