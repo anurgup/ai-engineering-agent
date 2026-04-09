@@ -1,19 +1,14 @@
 /**
  * Slack bot using Bolt for Node.js.
  *
- * Listens for @mentions (app_mention) and direct messages (message.im).
- * Reuses the same conversation/RAG/ticket-generation pipeline as the Teams bot.
- *
- * Flow:
- *   1. User @mentions the bot in a channel or sends a DM
- *   2. Bot asks up to 2 clarifying questions (Haiku, ~130 tokens/turn)
- *   3. Bot drafts a GitHub issue using RAG context (~265 tokens, once)
- *   4. User replies approve / edit: <changes> / reject
- *   5. Bot creates GitHub issue + triggers the AI agent
+ * Supports two modes:
+ *   - Socket Mode (SLACK_APP_TOKEN set): WebSocket, no public URL needed ← easiest
+ *   - HTTP Mode  (no SLACK_APP_TOKEN):  Express receiver, needs public URL
  *
  * Required env vars:
- *   SLACK_BOT_TOKEN      xoxb-...  (Bot User OAuth Token)
- *   SLACK_SIGNING_SECRET           (from App Settings → Basic Information)
+ *   SLACK_BOT_TOKEN      xoxb-...   (Bot User OAuth Token)
+ *   SLACK_SIGNING_SECRET            (Basic Information → App Credentials)
+ *   SLACK_APP_TOKEN      xapp-...   (Socket Mode token — enables Socket Mode)
  */
 
 import { App, ExpressReceiver } from "@slack/bolt";
@@ -36,39 +31,64 @@ const client = new Anthropic();
 
 // ── Bolt app + Express receiver ───────────────────────────────────────────────
 
-let receiver: ExpressReceiver;
 let boltApp: App;
 
-export function createSlackApp(): { app: App; receiver: ExpressReceiver } {
+/**
+ * Start the Slack bot.
+ * - If SLACK_APP_TOKEN is set → Socket Mode (WebSocket, no public URL needed)
+ * - Otherwise → HTTP mode (mounts on Express)
+ */
+export async function startSlackBot(): Promise<void> {
+  const signingSecret = process.env.SLACK_SIGNING_SECRET ?? "";
+  const botToken      = process.env.SLACK_BOT_TOKEN      ?? "";
+  const appToken      = process.env.SLACK_APP_TOKEN      ?? "";
+
+  if (!botToken) {
+    console.warn(`[slack] ⚠ SLACK_BOT_TOKEN not set — Slack bot disabled`);
+    return;
+  }
+
+  if (appToken) {
+    // ── Socket Mode ──────────────────────────────────────────────────────────
+    boltApp = new App({
+      token:      botToken,
+      appToken,
+      socketMode: true,
+    });
+
+    registerHandlers(boltApp);
+    await boltApp.start();
+    console.log(`[slack] ✅ Bot started in Socket Mode (WebSocket)`);
+  } else {
+    // ── HTTP Mode ────────────────────────────────────────────────────────────
+    const receiver = new ExpressReceiver({
+      signingSecret: signingSecret || "dummy-secret",
+      endpoints: "/api/slack/events",
+    });
+
+    boltApp = new App({ token: botToken, receiver });
+    registerHandlers(boltApp);
+    await boltApp.start();
+    console.log(`[slack] ✅ Bot started in HTTP mode at POST /api/slack/events`);
+  }
+}
+
+/** Mount Slack HTTP receiver onto an existing Express app (HTTP mode only) */
+export function mountSlackOnExpress(expressApp: Express): void {
   const signingSecret = process.env.SLACK_SIGNING_SECRET ?? "";
   const botToken      = process.env.SLACK_BOT_TOKEN      ?? "";
 
-  if (!signingSecret || !botToken) {
-    console.warn(
-      `[slack] ⚠ SLACK_SIGNING_SECRET or SLACK_BOT_TOKEN not set — Slack bot disabled`
-    );
-  }
+  if (!botToken) return;
 
-  receiver = new ExpressReceiver({
+  const receiver = new ExpressReceiver({
     signingSecret: signingSecret || "dummy-secret",
     endpoints: "/api/slack/events",
   });
 
-  boltApp = new App({
-    token:    botToken || "xoxb-dummy",
-    receiver,
-  });
-
+  boltApp = new App({ token: botToken, receiver });
   registerHandlers(boltApp);
-
-  console.log(`[slack] Bot registered at POST /api/slack/events`);
-  return { app: boltApp, receiver };
-}
-
-/** Mount Slack's express receiver onto your existing Express app */
-export function mountSlackOnExpress(expressApp: Express): void {
-  const { receiver } = createSlackApp();
   expressApp.use(receiver.router);
+  console.log(`[slack] Bot mounted at POST /api/slack/events`);
 }
 
 // ── Event handlers ────────────────────────────────────────────────────────────
