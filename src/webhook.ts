@@ -6,6 +6,7 @@ dotenv.config({ path: resolve(__dirname, "../.env"), override: true });
 import express, { Request, Response } from "express";
 import * as crypto from "crypto";
 import { buildGraph } from "./agent/graph.js";
+import { handleTeamsMessage, validateTeamsSignature } from "./teams/botHandler.js";
 
 // Extend Request to carry the raw body buffer for HMAC verification
 interface RawRequest extends Request {
@@ -91,6 +92,12 @@ app.post("/webhook/github", async (req: RawRequest, res: Response) => {
   });
 });
 
+// ── Teams Outgoing Webhook ────────────────────────────────────────────────────
+app.post("/api/teams", async (req: RawRequest, res: Response) => {
+  // validateTeamsSignature is called inside handleTeamsMessage — pass through
+  await handleTeamsMessage(req, res);
+});
+
 app.get("/health", (_req: Request, res: Response) => {
   res.json({ status: "ok", timestamp: new Date().toISOString() });
 });
@@ -98,6 +105,7 @@ app.get("/health", (_req: Request, res: Response) => {
 app.listen(PORT, () => {
   console.log(`\n🤖 AI Engineering Agent — Webhook Mode (Railway)`);
   console.log(`   Listening on port ${PORT}`);
-  console.log(`   Endpoint: POST /webhook/github`);
-  console.log(`   Health:   GET  /health\n`);
+  console.log(`   GitHub webhook: POST /webhook/github`);
+  console.log(`   Teams bot:      POST /api/teams`);
+  console.log(`   Health:         GET  /health\n`);
 });
