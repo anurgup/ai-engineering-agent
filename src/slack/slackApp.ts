@@ -205,11 +205,16 @@ async function routeMessage(session: ConversationSession, text: string, userId: 
     return lines.join("\n");
   }
 
-  // ── Ticket detail: ticket 23 ───────────────────────────────────────────────
-  const ticketDetailMatch = lower.match(/^ticket\s+#?(\d+)$/);
+  // ── Ticket detail: "ticket 23" OR just "23" OR "#23" ─────────────────────
+  const ticketDetailMatch = lower.match(/^(?:ticket\s+)?#?(\d+)$/);
   if (ticketDetailMatch) {
     const { buildTicketDetail } = await import("./pipeline.js");
-    return buildTicketDetail(parseInt(ticketDetailMatch[1]));
+    const { getTicket } = await import("./workflow/store.js");
+    const num = parseInt(ticketDetailMatch[1]);
+    // Only treat bare numbers as ticket lookups if the ticket exists
+    if (getTicket(num)) {
+      return buildTicketDetail(num);
+    }
   }
 
   // ── Standup ────────────────────────────────────────────────────────────────
