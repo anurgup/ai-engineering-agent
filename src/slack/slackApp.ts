@@ -27,6 +27,7 @@ import { clarifyOrGenerate, generateTicket } from "../teams/ticketGenerator.js";
 import { fetchTeamsRAGContext } from "../teams/ragContext.js";
 import { setSlackApp } from "./notifier.js";
 import { scheduleStandup, scheduleSLAChecker } from "./standup.js";
+import { hasDevSession, answerDevQuestion, endDevSession } from "./devAssistant.js";
 import Anthropic from "@anthropic-ai/sdk";
 
 const client = new Anthropic();
@@ -157,10 +158,18 @@ async function routeMessage(session: ConversationSession, text: string, userId: 
   // ── Global commands ────────────────────────────────────────────────────────
   if (lower === "cancel" || lower === "reset" || lower === "start over") {
     endSession(userId);
+    endDevSession(userId);
     return "Session cancelled. Send me a new message to start fresh! 👋";
   }
 
   if (lower === "help") return helpText();
+
+  // ── Dev assistant — intercept messages when developer is in coding mode ────
+  // Allow "done <number>" to pass through so workflow engine handles it
+  const isDoneCommand = /^done\s+#?\d+$/.test(lower);
+  if (hasDevSession(userId) && !isDoneCommand) {
+    return answerDevQuestion(userId, text);
+  }
 
   // ── Pipeline status ────────────────────────────────────────────────────────
   if (lower === "status" || lower === "pipeline") {
@@ -293,6 +302,7 @@ async function handleWorkflowCommand(lower: string, text: string, userId: string
   if (m) {
     const ticket = getTicket(parseInt(m[1]));
     if (!ticket) return `❓ Ticket #${m[1]} not found.`;
+    endDevSession(userId); // close dev assistant session
     return handleDevDone(ticket, userId);
   }
 
@@ -553,6 +563,9 @@ function helpText(): string {
     `• \`status\` — full pipeline view\n` +
     `• \`standup\` — today's standup summary\n` +
     `• \`ticket <#>\` — detail view of a ticket\n\n` +
+    `*Dev Assistant (auto-active when coding):*\n` +
+    `Just ask anything — _"How should I write the DAO method?"_\n` +
+    `I'll answer based on your actual codebase + past PRs.\n\n` +
     `*Other:* \`reset\` · \`cancel\` · \`help\``
   );
 }

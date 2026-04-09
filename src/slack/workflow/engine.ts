@@ -17,6 +17,7 @@ import { notifyUser, notifyChannel, lookupSlackUser } from "../notifier.js";
 import { generateTestCases } from "../testGenerator.js";
 import { reviewPR } from "../prReviewer.js";
 import { buildGraph } from "../../agent/graph.js";
+import { startDevSession } from "../devAssistant.js";
 
 // The main Slack channel to post status updates in
 const STATUS_CHANNEL = process.env.SLACK_STATUS_CHANNEL ?? "general";
@@ -180,7 +181,7 @@ export async function handleAssign(
 }
 
 /**
- * Developer said "I'll do it myself"
+ * Developer said "I'll do it myself" — activate dev assistant
  */
 export async function handleHumanDevelop(
   ticket: WorkflowTicket,
@@ -189,10 +190,17 @@ export async function handleHumanDevelop(
   ticket.developerMode = "human";
   saveTicket(ticket);
 
+  // Start the RAG-powered dev assistant for this developer
+  startDevSession(userId, ticket.issueNumber, ticket.title);
+
   return (
-    `Got it! You're coding #${ticket.issueNumber} yourself. 💪\n\n` +
-    `When you're done, type:\n` +
-    `• \`done ${ticket.issueNumber}\` — to move to review/deploy stage`
+    `Got it! You're coding *#${ticket.issueNumber}* yourself. 💪\n\n` +
+    `I'm your coding assistant — ask me anything while you develop:\n` +
+    `• _"How should I structure this?"_\n` +
+    `• _"Show me the pattern used in similar files"_\n` +
+    `• _"What's the best way to write the DAO method?"_\n\n` +
+    `I'll answer based on *your actual codebase* — not generic advice.\n\n` +
+    `When you're done: \`done ${ticket.issueNumber}\``
   );
 }
 
