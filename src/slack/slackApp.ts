@@ -25,9 +25,16 @@ import {
 
 import { clarifyOrGenerate, generateTicket } from "../teams/ticketGenerator.js";
 import { fetchTeamsRAGContext } from "../teams/ragContext.js";
+import { setSlackApp } from "./notifier.js";
+import { scheduleStandup, scheduleSLAChecker } from "./standup.js";
 import Anthropic from "@anthropic-ai/sdk";
 
 const client = new Anthropic();
+
+function startSchedulers(): void {
+  scheduleStandup();
+  scheduleSLAChecker();
+}
 
 // ── Bolt app + Express receiver ───────────────────────────────────────────────
 
@@ -57,7 +64,9 @@ export async function startSlackBot(): Promise<void> {
     });
 
     registerHandlers(boltApp);
+    setSlackApp(boltApp);
     await boltApp.start();
+    startSchedulers();
     console.log(`[slack] ✅ Bot started in Socket Mode (WebSocket)`);
   } else {
     // ── HTTP Mode ────────────────────────────────────────────────────────────
@@ -68,7 +77,9 @@ export async function startSlackBot(): Promise<void> {
 
     boltApp = new App({ token: botToken, receiver });
     registerHandlers(boltApp);
+    setSlackApp(boltApp);
     await boltApp.start();
+    startSchedulers();
     console.log(`[slack] ✅ Bot started in HTTP mode at POST /api/slack/events`);
   }
 }
@@ -109,7 +120,7 @@ function registerHandlers(app: App): void {
     await say({ text: "_Thinking..._", thread_ts: event.ts });
 
     const session = getOrCreateSession(userId, channel);
-    const reply   = await routeMessage(session, rawText);
+    const reply   = await routeMessage(session, rawText, userId);
 
     await say({ text: slackFormat(reply), thread_ts: event.ts });
   });
@@ -132,42 +143,175 @@ function registerHandlers(app: App): void {
     await say({ text: "_Thinking..._" });
 
     const session = getOrCreateSession(userId, channel);
-    const reply   = await routeMessage(session, rawText);
+    const reply   = await routeMessage(session, rawText, userId);
 
     await say({ text: slackFormat(reply) });
   });
 }
 
-// ── Routing (same logic as Teams bot) ────────────────────────────────────────
+// ── Routing — SDLC workflow commands + ticket creation ────────────────────────
 
-async function routeMessage(session: ConversationSession, text: string): Promise<string> {
+async function routeMessage(session: ConversationSession, text: string, userId: string): Promise<string> {
   const lower = text.toLowerCase().trim();
 
+  // ── Global commands ────────────────────────────────────────────────────────
   if (lower === "cancel" || lower === "reset" || lower === "start over") {
-    endSession(session.userId);
+    endSession(userId);
     return "Session cancelled. Send me a new message to start fresh! 👋";
   }
 
   if (lower === "help") return helpText();
 
+  // ── Pipeline status ────────────────────────────────────────────────────────
+  if (lower === "status" || lower === "pipeline") {
+    const { buildPipelineStatus } = await import("./pipeline.js");
+    return buildPipelineStatus();
+  }
+
+  // ── Ticket detail: ticket 23 ───────────────────────────────────────────────
+  const ticketDetailMatch = lower.match(/^ticket\s+#?(\d+)$/);
+  if (ticketDetailMatch) {
+    const { buildTicketDetail } = await import("./pipeline.js");
+    return buildTicketDetail(parseInt(ticketDetailMatch[1]));
+  }
+
+  // ── Standup ────────────────────────────────────────────────────────────────
+  if (lower === "standup") {
+    const { buildStandupMessage } = await import("./standup.js");
+    return buildStandupMessage();
+  }
+
+  // ── Workflow commands: require a ticket number ─────────────────────────────
+  const workflowResult = await handleWorkflowCommand(lower, text, userId);
+  if (workflowResult) return workflowResult;
+
+  // ── Ticket creation conversation ───────────────────────────────────────────
   switch (session.phase) {
     case "clarifying":
-      return handleClarifying(session, text);
+      return handleClarifying(session, text, userId);
     case "awaiting_approval":
-      return handleApproval(session, text);
+      return handleApproval(session, text, userId);
     case "done": {
-      endSession(session.userId);
-      const fresh = getOrCreateSession(session.userId, session.conversationId);
-      return handleClarifying(fresh, text);
+      endSession(userId);
+      const fresh = getOrCreateSession(userId, session.conversationId);
+      return handleClarifying(fresh, text, userId);
     }
     default:
       return "Something went wrong. Type *reset* to start over.";
   }
 }
 
+// ── Workflow command router ────────────────────────────────────────────────────
+
+async function handleWorkflowCommand(lower: string, text: string, userId: string): Promise<string | null> {
+  const {
+    createWorkflowTicket, handleNewTicket, handleAIDevelop, handleAssign,
+    handleHumanDevelop, handleDevDone, handleAIReview, handleDeploy,
+    handleAITest, handleAssignTester, handleClose,
+  } = await import("./workflow/engine.js");
+  const { getTicket } = await import("./workflow/store.js");
+
+  // develop / ai develop <number>
+  let m = lower.match(/^(?:ai\s+)?develop\s+#?(\d+)$/);
+  if (m) {
+    const ticket = getTicket(parseInt(m[1]));
+    if (!ticket) return `❓ Ticket #${m[1]} not found. Create it first by describing a feature.`;
+    return handleAIDevelop(ticket, userId);
+  }
+
+  // assign <name> [to ticket <number>] OR assign tester <name> [to <number>]
+  m = lower.match(/^assign\s+tester\s+(.+?)(?:\s+(?:to\s+)?#?(\d+))?$/);
+  if (m) {
+    const num = m[2] ? parseInt(m[2]) : await findRecentTicket(userId);
+    if (!num) return `Please specify a ticket number: \`assign tester <name> <number>\``;
+    const ticket = getTicket(num);
+    if (!ticket) return `❓ Ticket #${num} not found.`;
+    return handleAssignTester(ticket, m[1].trim(), userId);
+  }
+
+  m = lower.match(/^assign\s+(.+?)(?:\s+(?:to\s+)?#?(\d+))?$/);
+  if (m) {
+    const num = m[2] ? parseInt(m[2]) : await findRecentTicket(userId);
+    if (!num) return `Please specify a ticket number: \`assign <name> <number>\``;
+    const ticket = getTicket(num);
+    if (!ticket) return `❓ Ticket #${num} not found.`;
+    return handleAssign(ticket, m[1].trim(), userId);
+  }
+
+  // i'll do it <number>
+  m = lower.match(/^i'?ll?\s+do\s+it\s+#?(\d+)$/);
+  if (m) {
+    const ticket = getTicket(parseInt(m[1]));
+    if (!ticket) return `❓ Ticket #${m[1]} not found.`;
+    return handleHumanDevelop(ticket, userId);
+  }
+
+  // done <number>
+  m = lower.match(/^done\s+#?(\d+)$/);
+  if (m) {
+    const ticket = getTicket(parseInt(m[1]));
+    if (!ticket) return `❓ Ticket #${m[1]} not found.`;
+    return handleDevDone(ticket, userId);
+  }
+
+  // review <number>
+  m = lower.match(/^review\s+#?(\d+)$/);
+  if (m) {
+    const ticket = getTicket(parseInt(m[1]));
+    if (!ticket) return `❓ Ticket #${m[1]} not found.`;
+    return handleAIReview(ticket, userId);
+  }
+
+  // deploy <number>
+  m = lower.match(/^(?:skip\s+)?deploy\s+#?(\d+)$/);
+  if (m) {
+    const ticket = getTicket(parseInt(m[1]));
+    if (!ticket) return `❓ Ticket #${m[1]} not found.`;
+    return handleDeploy(ticket, userId);
+  }
+
+  // ai test <number>
+  m = lower.match(/^ai\s+test\s+#?(\d+)$/);
+  if (m) {
+    const ticket = getTicket(parseInt(m[1]));
+    if (!ticket) return `❓ Ticket #${m[1]} not found.`;
+    return handleAITest(ticket, userId);
+  }
+
+  // test myself <number>
+  m = lower.match(/^test\s+myself\s+#?(\d+)$/);
+  if (m) {
+    const ticket = getTicket(parseInt(m[1]));
+    if (!ticket) return `❓ Ticket #${m[1]} not found.`;
+    return `Got it! Test #${m[1]} yourself. When all tests pass, type \`close ${m[1]}\`.`;
+  }
+
+  // close <number>
+  m = lower.match(/^close\s+#?(\d+)$/);
+  if (m) {
+    const ticket = getTicket(parseInt(m[1]));
+    if (!ticket) return `❓ Ticket #${m[1]} not found.`;
+    return handleClose(ticket, userId, true);
+  }
+
+  return null; // not a workflow command
+}
+
+/** Find the most recent non-done ticket for a user */
+async function findRecentTicket(userId: string): Promise<number | null> {
+  try {
+    const { getTicketsByAssignee, getAllTickets } = await import("./workflow/store.js");
+    const assigned = getTicketsByAssignee(userId);
+    if (assigned.length > 0) return assigned[assigned.length - 1].issueNumber;
+    const all = getAllTickets().filter((t) => t.createdBy === userId && t.stage !== "done");
+    if (all.length > 0) return all[all.length - 1].issueNumber;
+  } catch { /* ignore */ }
+  return null;
+}
+
 // ── Phase: clarifying ─────────────────────────────────────────────────────────
 
-async function handleClarifying(session: ConversationSession, userText: string): Promise<string> {
+async function handleClarifying(session: ConversationSession, userText: string, userId: string): Promise<string> {
   await addTurnAndMaybeSummarize(session, "user", userText);
   session.clarifyRound++;
 
@@ -176,7 +320,7 @@ async function handleClarifying(session: ConversationSession, userText: string):
   const userSignalsReady = /\b(generate|ready|that'?s? (all|it)|go ahead|create|yes|ok(ay)?|sure)\b/i.test(userText);
 
   if (session.clarifyRound >= 3 || userSignalsReady) {
-    return generateAndPresent(session, userText, context);
+    return generateAndPresent(session, userText, context, userId);
   }
 
   let response: { ready: boolean; question?: string };
@@ -187,7 +331,7 @@ async function handleClarifying(session: ConversationSession, userText: string):
   }
 
   if (response.ready) {
-    return generateAndPresent(session, userText, context);
+    return generateAndPresent(session, userText, context, userId);
   }
 
   const question = response.question ?? "Could you give me a bit more detail?";
@@ -200,7 +344,8 @@ async function handleClarifying(session: ConversationSession, userText: string):
 async function generateAndPresent(
   session: ConversationSession,
   lastMessage: string,
-  context: string
+  context: string,
+  userId: string
 ): Promise<string> {
   session.phase = "generating";
 
@@ -225,7 +370,7 @@ async function generateAndPresent(
 
 // ── Phase: awaiting_approval ──────────────────────────────────────────────────
 
-async function handleApproval(session: ConversationSession, userText: string): Promise<string> {
+async function handleApproval(session: ConversationSession, userText: string, userId: string): Promise<string> {
   const lower = userText.toLowerCase().trim();
 
   if (!session.pendingTicket) {
@@ -234,11 +379,11 @@ async function handleApproval(session: ConversationSession, userText: string): P
   }
 
   if (["approve", "yes", "ok", "lgtm", "ship it", "✅"].includes(lower)) {
-    return createIssueAndTrigger(session);
+    return createIssueAndTrigger(session, userId);
   }
 
   if (["reject", "no", "cancel", "discard"].includes(lower)) {
-    endSession(session.userId);
+    endSession(userId);
     return "Ticket discarded. Send me a new message to start fresh! 👋";
   }
 
@@ -249,7 +394,7 @@ async function handleApproval(session: ConversationSession, userText: string): P
 
   // Treat as additional context — regenerate
   await addTurnAndMaybeSummarize(session, "user", userText);
-  return generateAndPresent(session, userText, buildContext(session));
+  return generateAndPresent(session, userText, buildContext(session), userId);
 }
 
 // ── Apply edits ───────────────────────────────────────────────────────────────
@@ -282,14 +427,14 @@ async function applyEdits(session: ConversationSession, edits: string): Promise<
 
 // ── Create GitHub issue + trigger agent ───────────────────────────────────────
 
-async function createIssueAndTrigger(session: ConversationSession): Promise<string> {
+async function createIssueAndTrigger(session: ConversationSession, userId: string): Promise<string> {
   const ticket = session.pendingTicket!;
   const owner  = process.env.GITHUB_OWNER;
   const repo   = process.env.GITHUB_REPO;
   const token  = process.env.GITHUB_TOKEN;
 
   if (!owner || !repo || !token) {
-    endSession(session.userId);
+    endSession(userId);
     return "⚠️ GitHub is not configured on the server. Please contact the admin.";
   }
 
@@ -319,18 +464,18 @@ async function createIssueAndTrigger(session: ConversationSession): Promise<stri
 
   console.log(`[slack] ✅ Created issue #${issueNumber}: ${ticket.title}`);
 
-  // Trigger the AI agent in background
-  const { buildGraph } = await import("../agent/graph.js");
-  buildGraph()
-    .invoke({ ticketKey: String(issueNumber), autoApprove: true })
-    .catch((e: unknown) => console.error(`[slack] Agent failed for #${issueNumber}:`, e));
+  // Register in workflow store
+  const { createWorkflowTicket, handleNewTicket } = await import("./workflow/engine.js");
+  const wfTicket = createWorkflowTicket(issueNumber, ticket.title, userId, issueUrl);
 
-  endSession(session.userId);
+  endSession(userId);
+
+  const nextSteps = await handleNewTicket(wfTicket, session.conversationId);
 
   return (
-    `✅ *Issue #${issueNumber} created and agent triggered!*\n\n` +
+    `✅ *Issue #${issueNumber} created!*\n` +
     `📋 <${issueUrl}|${ticket.title}>\n\n` +
-    `The AI Engineering Agent is now working on it. You'll see a PR in a few minutes. 🚀`
+    nextSteps
   );
 }
 
@@ -350,13 +495,23 @@ function formatTicketPreview(ticket: PendingTicket): string {
 
 function helpText(): string {
   return (
-    `*AI Engineering Agent — Slack Bot*\n\n` +
-    `Tell me what feature or bug you need. I'll:\n` +
-    `1. Ask up to 2 clarifying questions\n` +
-    `2. Show you a proposed GitHub issue\n` +
-    `3. Wait for your *approve* / *edit* / *reject*\n` +
-    `4. Create the issue and trigger the AI agent\n\n` +
-    `Commands: *reset* · *cancel* · *help*`
+    `*AI Engineering Agent — SDLC Bot* 🤖\n\n` +
+    `*Create a ticket:* Just describe what you need — I'll ask a couple questions and draft a GitHub issue.\n\n` +
+    `*Workflow commands:*\n` +
+    `• \`develop <#>\` — AI writes the code for this ticket\n` +
+    `• \`assign <name> <#>\` — assign to a developer\n` +
+    `• \`assign tester <name> <#>\` — assign to a tester\n` +
+    `• \`review <#>\` — AI reviews the PR\n` +
+    `• \`deploy <#>\` — deploy to staging\n` +
+    `• \`ai test <#>\` — AI generates test cases\n` +
+    `• \`test myself <#>\` — you'll test it\n` +
+    `• \`done <#>\` — mark development complete\n` +
+    `• \`close <#>\` — close the ticket\n\n` +
+    `*Status commands:*\n` +
+    `• \`status\` — full pipeline view\n` +
+    `• \`standup\` — today's standup summary\n` +
+    `• \`ticket <#>\` — detail view of a ticket\n\n` +
+    `*Other:* \`reset\` · \`cancel\` · \`help\``
   );
 }
 
