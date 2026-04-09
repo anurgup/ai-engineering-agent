@@ -168,6 +168,43 @@ async function routeMessage(session: ConversationSession, text: string, userId: 
     return buildPipelineStatus();
   }
 
+  // ── Tickets list ───────────────────────────────────────────────────────────
+  if (lower === "tickets" || lower === "list tickets" || lower === "show tickets" || lower === "my tickets") {
+    const { getAllTickets, getTicketsByAssignee } = await import("./workflow/store.js");
+    const tickets = lower === "my tickets"
+      ? getTicketsByAssignee(userId)
+      : getAllTickets().filter((t) => t.stage !== "done");
+
+    if (tickets.length === 0) {
+      return lower === "my tickets"
+        ? "You have no active tickets assigned to you."
+        : "No active tickets found. Describe a feature to create one!";
+    }
+
+    const STAGE_EMOJI: Record<string, string> = {
+      backlog: "📋", in_dev: "👨‍💻", in_review: "🔍", in_testing: "🧪", done: "✅", blocked: "🚫",
+    };
+
+    const lines = [
+      `📋 *All Active Tickets (${tickets.length})*`,
+      `━━━━━━━━━━━━━━━━━━━━━━━━`,
+    ];
+
+    for (const t of tickets) {
+      const emoji    = STAGE_EMOJI[t.stage] ?? "❓";
+      const stage    = t.stage.replace("_", " ").toUpperCase();
+      const assignee = t.assigneeName ? ` · 👤 ${t.assigneeName}` : " · 👤 Unassigned";
+      const dev      = t.developerMode === "ai" ? " · 🤖 AI Dev" : "";
+      const link     = t.githubUrl ? `<${t.githubUrl}|#${t.issueNumber}>` : `#${t.issueNumber}`;
+      lines.push(`${emoji} ${link} *${t.title}*`);
+      lines.push(`    └ ${stage}${assignee}${dev}`);
+    }
+
+    lines.push(`━━━━━━━━━━━━━━━━━━━━━━━━`);
+    lines.push(`_Type \`ticket <number>\` for full details_`);
+    return lines.join("\n");
+  }
+
   // ── Ticket detail: ticket 23 ───────────────────────────────────────────────
   const ticketDetailMatch = lower.match(/^ticket\s+#?(\d+)$/);
   if (ticketDetailMatch) {
