@@ -7,6 +7,7 @@ import express, { Request, Response } from "express";
 import * as crypto from "crypto";
 import { buildGraph } from "./agent/graph.js";
 import { handleTeamsMessage, validateTeamsSignature } from "./teams/botHandler.js";
+import { mountSlackOnExpress } from "./slack/slackApp.js";
 
 // Extend Request to carry the raw body buffer for HMAC verification
 interface RawRequest extends Request {
@@ -92,6 +93,13 @@ app.post("/webhook/github", async (req: RawRequest, res: Response) => {
   });
 });
 
+// ── Slack Bot (Bolt) ──────────────────────────────────────────────────────────
+// Mounts POST /api/slack/events — Bolt handles signature + routing internally
+if (process.env.SLACK_BOT_TOKEN && process.env.SLACK_SIGNING_SECRET) {
+  mountSlackOnExpress(app);
+  console.log(`[slack] Bot mounted at POST /api/slack/events`);
+}
+
 // ── Teams Outgoing Webhook ────────────────────────────────────────────────────
 app.post("/api/teams", async (req: RawRequest, res: Response) => {
   // validateTeamsSignature is called inside handleTeamsMessage — pass through
@@ -106,6 +114,7 @@ app.listen(PORT, () => {
   console.log(`\n🤖 AI Engineering Agent — Webhook Mode (Railway)`);
   console.log(`   Listening on port ${PORT}`);
   console.log(`   GitHub webhook: POST /webhook/github`);
+  console.log(`   Slack bot:      POST /api/slack/events`);
   console.log(`   Teams bot:      POST /api/teams`);
   console.log(`   Health:         GET  /health\n`);
 });
