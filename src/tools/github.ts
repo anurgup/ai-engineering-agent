@@ -60,6 +60,13 @@ export class GitHubClient {
     await this.git.checkout(this.baseBranch);
     await this.git.pull("origin", this.baseBranch);
 
+    // If the branch already exists locally (e.g. from a previous failed run), delete it first
+    const branches = await this.git.branchLocal();
+    if (branches.all.includes(branch)) {
+      console.log(`[github] Branch "${branch}" already exists locally — deleting and recreating`);
+      await this.git.deleteLocalBranch(branch, true); // true = force delete
+    }
+
     // Create and checkout the new feature branch
     await this.git.checkoutLocalBranch(branch);
 
