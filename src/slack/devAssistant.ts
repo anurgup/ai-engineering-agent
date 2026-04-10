@@ -105,7 +105,8 @@ export async function answerDevQuestion(userId: string, question: string): Promi
   // ── Normal Q&A mode ───────────────────────────────────────────────────────
   const systemPrompt =
     `You are a senior software engineer pair-programming with a developer.
-You know their codebase deeply — reference actual files, classes, and patterns.
+You know their codebase AND their system architecture/domain knowledge deeply.
+Use both technical (code patterns) AND functional (business rules, cluster/service/market mapping) context.
 Be concise and practical. Match their existing conventions.
 If asked to write code, show it in a code block.
 
@@ -280,18 +281,18 @@ async function buildRAGContext(question: string, session: DevSession): Promise<s
     }
   }
 
-  // 3. Notion docs
+  // 3. Notion docs — architecture + functional + domain knowledge
   const notionStore = new RAGStore(
     process.env.NOTION_VECTOR_STORE_PATH ?? path.resolve("data", "notion-vectors.json")
   );
   if (notionStore.size > 0) {
-    const notionHits = notionStore.search(queryVector, 2).filter((h) => h.score > 0.5);
+    const notionHits = notionStore.search(queryVector, 3).filter((h) => h.score > 0.45);
     if (notionHits.length > 0) {
-      sections.push("## Architecture Docs");
+      sections.push("## Architecture & Domain Knowledge");
       notionHits.forEach((h) => {
-        const meta = h.metadata as { title?: string; excerpt?: string };
-        const excerpt = (meta.excerpt ?? h.text).slice(0, 100);
-        sections.push(`- ${meta.title ?? "Doc"}: ${excerpt}`);
+        const meta    = h.metadata as { title?: string; excerpt?: string };
+        const excerpt = (meta.excerpt ?? h.text).slice(0, 200);
+        sections.push(`### ${meta.title ?? "Doc"}\n${excerpt}`);
       });
     }
   }

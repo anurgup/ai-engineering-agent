@@ -28,6 +28,7 @@ import { fetchTeamsRAGContext } from "../teams/ragContext.js";
 import { setSlackApp } from "./notifier.js";
 import { scheduleStandup, scheduleSLAChecker } from "./standup.js";
 import { hasDevSession, answerDevQuestion, endDevSession } from "./devAssistant.js";
+import { answerKnowledgeQuestion } from "./knowledgeBase.js";
 import Anthropic from "@anthropic-ai/sdk";
 
 const client = new Anthropic();
@@ -230,6 +231,22 @@ async function routeMessage(session: ConversationSession, text: string, userId: 
   if (lower === "standup") {
     const { buildStandupMessage } = await import("./standup.js");
     return buildStandupMessage();
+  }
+
+  // ── Reindex Notion ─────────────────────────────────────────────────────────
+  if (lower === "reindex") {
+    const { reindexNotion } = await import("../agent/nodes/readNotion.js");
+    const { RAGStore }      = await import("../tools/ragStore.js");
+    const store = new RAGStore();
+    await reindexNotion(store);
+    return `✅ Notion reindexed! ${store.size} pages ready to query.`;
+  }
+
+  // ── Knowledge Q&A — "ask <question>" or "? <question>" or natural questions ─
+  const askMatch = text.match(/^(?:ask|what|which|who|where|how|why|when|\?)\s+(.+)/i);
+  if (askMatch ?? lower.includes("cluster") ?? lower.includes("service") ?? lower.includes("market") ?? lower.includes("team") ?? lower.includes("flow") ?? lower.includes("architecture")) {
+    const question = askMatch ? askMatch[1] : text;
+    return answerKnowledgeQuestion(question);
   }
 
   // ── Workflow commands: require a ticket number ─────────────────────────────
@@ -563,6 +580,11 @@ function helpText(): string {
     `• \`status\` — full pipeline view\n` +
     `• \`standup\` — today's standup summary\n` +
     `• \`ticket <#>\` — detail view of a ticket\n\n` +
+    `*Knowledge Base (ask anything from Notion):*\n` +
+    `• \`ask which cluster handles India?\`\n` +
+    `• \`what is the payment flow?\`\n` +
+    `• \`which team owns Order Service?\`\n` +
+    `• \`reindex\` — force fresh Notion index\n\n` +
     `*Dev Assistant (auto-active when coding):*\n` +
     `Just ask anything — _"How should I write the DAO method?"_\n` +
     `I'll answer based on your actual codebase + past PRs.\n\n` +
