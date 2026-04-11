@@ -1,6 +1,7 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { AgentState, GeneratedCode } from "../state.js";
 import { buildAnalyzeTicketPrompt } from "../../prompts/analyzeTicket.js";
+import { getCommenter } from "../../tools/issueCommenter.js";
 
 const MODEL = "claude-sonnet-4-6";
 
@@ -56,6 +57,7 @@ export async function generateCode(state: AgentState): Promise<Partial<AgentStat
   const ticket = state.ticket!;
 
   console.log(`\n[generateCode] Sending ticket to Claude ${MODEL}...`);
+  await getCommenter(ticket.number).generatingCode();
   const prompt = buildAnalyzeTicketPrompt(ticket, state.notionContext, state.classification!, state.repoContext, state.projectConfig, state.memoryContext);
 
   const response = await callClaudeWithRetry(client, prompt);
@@ -75,6 +77,8 @@ export async function generateCode(state: AgentState): Promise<Partial<AgentStat
       `[generateCode] New dependencies: ${generatedCode.dependencies.join(", ")}`
     );
   }
+
+  await getCommenter(ticket.number).codeGenerated(generatedCode.files.map((f) => f.path));
 
   return {
     generatedCode,

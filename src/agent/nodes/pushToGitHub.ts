@@ -3,6 +3,7 @@ import { AgentState } from "../state.js";
 import { GitHubClient } from "../../tools/github.js";
 import { buildPrDescriptionPrompt } from "../../prompts/prDescription.js";
 import { addPRToMemory } from "./readMemory.js";
+import { getCommenter } from "../../tools/issueCommenter.js";
 
 const MODEL = "claude-haiku-4-5-20251001";
 
@@ -43,6 +44,9 @@ export async function pushToGitHub(state: AgentState): Promise<Partial<AgentStat
 
   const pullRequest = await github.createPullRequest(branch, prTitle, prBody);
   console.log(`[pushToGitHub] ✓ PR created: ${pullRequest.url}`);
+
+  // Post PR comment on issue
+  await getCommenter(ticket.number).prCreated(pullRequest.number, pullRequest.url);
 
   // ── Instantly add this PR to the memory index so future tickets find it ────
   await addPRToMemory({

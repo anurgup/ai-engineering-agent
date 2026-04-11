@@ -1,5 +1,6 @@
 import { AgentState } from "../state.js";
 import { GitHubIssuesClient } from "../../tools/github-issues.js";
+import { getCommenter } from "../../tools/issueCommenter.js";
 
 export async function handleRejection(state: AgentState): Promise<Partial<AgentState>> {
   const issues = new GitHubIssuesClient();
@@ -7,10 +8,7 @@ export async function handleRejection(state: AgentState): Promise<Partial<AgentS
 
   console.log(`\n[handleRejection] Logging rejection on Issue #${ticket.number}...`);
 
-  await issues.addComment(
-    ticket.number,
-    `🤖 **AI Engineering Agent** generated code for this issue, but it was **rejected** by the developer during human review.\n\nThe issue has been returned for manual implementation.`
-  );
+  await getCommenter(ticket.number).rejected("Human rejected the generated code — returned for manual implementation");
 
   await issues.removeLabel(ticket.number, "in-progress");
   console.log(`[handleRejection] ✓ Label "in-progress" removed, issue left open`);

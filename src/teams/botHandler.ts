@@ -243,7 +243,7 @@ async function applyEdits(session: ConversationSession, edits: string): Promise<
   if (!session.pendingTicket) return "No pending ticket to edit.";
 
   const msg = await client.messages.create({
-    model: "claude-haiku-4-5",
+    model: "claude-haiku-4-5-20251001",
     max_tokens: 400,
     system:
       `You update a GitHub issue based on user feedback. Output only valid JSON: {"title": "...", "body": "...", "labels": [...]}`,

@@ -42,8 +42,8 @@ export async function fetchTeamsRAGContext(query: string): Promise<TeamsRAGConte
     return { notionSnippets: [], memorySnippets: [], tokenEstimate: 0 };
   }
 
-  const notionSnippets = searchNotionStore(queryVector);
-  const memorySnippets = searchMemoryStore(queryVector);
+  const notionSnippets = await searchNotionStore(queryVector);
+  const memorySnippets = await searchMemoryStore(queryVector);
 
   // Rough token estimate: ~4 chars per token
   const raw = [...notionSnippets, ...memorySnippets].join(" ");
@@ -82,18 +82,16 @@ export function formatRAGForPrompt(ctx: TeamsRAGContext): string {
 
 // ── Internal ──────────────────────────────────────────────────────────────────
 
-function searchNotionStore(queryVector: number[]): string[] {
+async function searchNotionStore(queryVector: number[]): Promise<string[]> {
   try {
     const store = new RAGStore(NOTION_STORE_PATH);
     if (store.size === 0) return [];
 
-    return store
-      .search(queryVector, 3)
+    return (await store.search(queryVector, 3))
       .filter((h) => h.score > 0.5)
       .map((h) => {
         const meta = h.metadata as { title?: string; excerpt?: string };
         const title   = meta.title   ?? "Untitled";
-        // Take only the first sentence of the excerpt (~15 tokens)
         const excerpt = firstSentence(meta.excerpt ?? h.text, 80);
         return `${title} — ${excerpt}`;
       });
@@ -102,13 +100,12 @@ function searchNotionStore(queryVector: number[]): string[] {
   }
 }
 
-function searchMemoryStore(queryVector: number[]): string[] {
+async function searchMemoryStore(queryVector: number[]): Promise<string[]> {
   try {
     const store = new RAGStore(MEMORY_STORE_PATH);
     if (store.size === 0) return [];
 
-    return store
-      .search(queryVector, 3)
+    return (await store.search(queryVector, 3))
       .filter((h) => h.score > 0.5)
       .map((h) => {
         const meta = h.metadata as {

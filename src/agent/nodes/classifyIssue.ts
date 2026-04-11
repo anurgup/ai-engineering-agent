@@ -2,8 +2,9 @@ import Anthropic from "@anthropic-ai/sdk";
 import * as fs from "fs";
 import * as path from "path";
 import { AgentState, IssueClassification } from "../state.js";
+import { getCommenter } from "../../tools/issueCommenter.js";
 
-const MODEL = "claude-haiku-4-5";
+const MODEL = "claude-haiku-4-5-20251001";
 
 /** Recursively collect all source file paths in the repo (excluding noise). */
 function collectRepoFiles(repoPath: string): string[] {
@@ -155,6 +156,13 @@ Respond ONLY with valid JSON, no markdown fences:
   console.log(`[classifyIssue] ✓ Type: ${classification.type.toUpperCase()} — ${classification.reason}`);
   console.log(`[classifyIssue] ✓ Relevant files (${classification.relevantFilePaths.length}):`);
   classification.relevantFilePaths.forEach(f => console.log(`  - ${f}`));
+
+  // Post progress comment
+  const commenter = getCommenter(ticket.number);
+  await commenter.classified(
+    classification.type === "fresh" ? "Fresh Feature" : "Modification",
+    projectConfig?.language ?? "unknown"
+  );
 
   return {
     classification,

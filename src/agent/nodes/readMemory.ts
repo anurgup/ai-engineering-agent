@@ -2,6 +2,7 @@ import { Octokit }               from "@octokit/rest";
 import { AgentState, MemoryEntry } from "../state.js";
 import { RAGStore }                from "../../tools/ragStore.js";
 import { embedText, embedBatch }   from "../../tools/embeddings.js";
+import { getCommenter }            from "../../tools/issueCommenter.js";
 import * as path                   from "path";
 
 const MEMORY_STORE_PATH = process.env.MEMORY_STORE_PATH
@@ -56,7 +57,7 @@ export async function readMemory(state: AgentState): Promise<Partial<AgentState>
   if (state.queryEmbedding) {
     console.log(`[readMemory] Reusing query embedding from readNotion (saves one API call)`);
   }
-  const hits   = memStore.search(vector, TOP_K);
+  const hits   = await memStore.search(vector, TOP_K);
   const relevant = hits.filter((h) => h.score >= MIN_SCORE);
 
   const memoryContext: MemoryEntry[] = relevant.map(
@@ -79,6 +80,10 @@ export async function readMemory(state: AgentState): Promise<Partial<AgentState>
   if (memoryContext.length === 0) {
     console.log(`[readMemory]   (no entries above threshold — proceeding without memory)`);
   }
+
+  // Post progress comment
+  const issueNumber = parseInt(state.ticketKey, 10);
+  await getCommenter(issueNumber).memoryFound(memoryContext.length);
 
   return {
     memoryContext,
@@ -173,7 +178,7 @@ async function reindexMemory(memStore: RAGStore): Promise<void> {
   const texts   = all.map(buildMemoryText);
   const vectors = await embedBatch(texts);
 
-  memStore.clear();
+  await memStore.clear();
   for (let i = 0; i < all.length; i++) {
     memStore.upsert({
       id:       all[i].url,
@@ -184,7 +189,7 @@ async function reindexMemory(memStore: RAGStore): Promise<void> {
   }
 
   memStore.setLastIndexed();
-  memStore.save();
+  await memStore.save();
 
   console.log(`[readMemory] ✓ Indexed ${all.length} entries → data/memory-vectors.json`);
 }
@@ -205,7 +210,7 @@ export async function addPRToMemory(entry: MemoryEntry): Promise<void> {
       vector,
       metadata: entry as unknown as Record<string, unknown>,
     });
-    memStore.save();
+    await memStore.save();
 
     console.log(`[readMemory] ✓ PR #${entry.number} "${entry.title}" added to memory`);
   } catch (err) {

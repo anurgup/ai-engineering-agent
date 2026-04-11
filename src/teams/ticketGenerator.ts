@@ -61,7 +61,7 @@ Rules:
   console.log(`[teams/ticketGen] Generating ticket with Haiku (~${estimateTokens(userContent)} input tokens)`);
 
   const msg = await client.messages.create({
-    model: "claude-haiku-4-5",
+    model: "claude-haiku-4-5-20251001",
     max_tokens: 400,
     system: systemPrompt,
     messages: [{ role: "user", content: userContent }],
@@ -105,7 +105,7 @@ export async function clarifyOrGenerate(
   lastMessage: string
 ): Promise<{ ready: boolean; question?: string }> {
   const msg = await client.messages.create({
-    model: "claude-haiku-4-5",
+    model: "claude-haiku-4-5-20251001",
     max_tokens: 80,
     system:
       `You help gather requirements for a GitHub issue. Decide if you have enough context to write one, or ask ONE clarifying question.

@@ -121,7 +121,7 @@ Current ticket: #${session.issueNumber} — ${session.issueTitle}`;
   console.log(`[devAssistant] Answering for #${session.issueNumber} (~${Math.ceil(userContent.length / 4)} tokens)`);
 
   const msg = await client.messages.create({
-    model:      "claude-haiku-4-5",
+    model:      "claude-haiku-4-5-20251001",
     max_tokens: 600,
     system:     systemPrompt,
     messages:   [{ role: "user", content: userContent }],
@@ -172,7 +172,7 @@ Rules:
   ].filter(Boolean).join("\n");
 
   const msg = await client.messages.create({
-    model:      "claude-haiku-4-5",
+    model:      "claude-haiku-4-5-20251001",
     max_tokens: 1200,
     system:     systemPrompt,
     messages:   [{ role: "user", content: userContent }],
@@ -270,7 +270,7 @@ async function buildRAGContext(question: string, session: DevSession): Promise<s
     process.env.MEMORY_VECTOR_STORE_PATH ?? path.resolve("data", "memory-vectors.json")
   );
   if (memoryStore.size > 0) {
-    const memHits = memoryStore.search(queryVector, 2).filter((h) => h.score > 0.5);
+    const memHits = (await memoryStore.search(queryVector, 2)).filter((h) => h.score > 0.5);
     if (memHits.length > 0) {
       sections.push("## Past PRs (similar work)");
       memHits.forEach((h) => {
@@ -286,7 +286,7 @@ async function buildRAGContext(question: string, session: DevSession): Promise<s
     process.env.NOTION_VECTOR_STORE_PATH ?? path.resolve("data", "notion-vectors.json")
   );
   if (notionStore.size > 0) {
-    const notionHits = notionStore.search(queryVector, 3).filter((h) => h.score > 0.45);
+    const notionHits = (await notionStore.search(queryVector, 3)).filter((h) => h.score > 0.45);
     if (notionHits.length > 0) {
       sections.push("## Architecture & Domain Knowledge");
       notionHits.forEach((h) => {
@@ -313,7 +313,7 @@ async function summarizeTurns(
   const prior = existing ? `Prior: ${existing}\n\n` : "";
 
   const msg = await client.messages.create({
-    model:      "claude-haiku-4-5",
+    model:      "claude-haiku-4-5-20251001",
     max_tokens: 80,
     messages:   [{
       role:    "user",

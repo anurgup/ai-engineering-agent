@@ -42,7 +42,7 @@ export async function reviewPR(
   }
 
   const msg = await client.messages.create({
-    model:      "claude-haiku-4-5",
+    model:      "claude-haiku-4-5-20251001",
     max_tokens: 600,
     system:
       `You are a senior software engineer doing a code review.

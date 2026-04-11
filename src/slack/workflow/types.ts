@@ -16,26 +16,29 @@ export type DeveloperMode = "ai" | "human" | "pending";
 export type TestMode      = "ai" | "human" | "pending";
 
 export interface WorkflowTicket {
-  issueNumber:    number;
-  title:          string;
-  stage:          TicketStage;
-  createdBy:      string;          // Slack user ID of creator
-  assigneeSlackId?: string;        // Slack user ID of assignee
-  assigneeName?:  string;          // Human-readable name
-  assigneeRole:   AssigneeRole;
-  developerMode:  DeveloperMode;
-  testMode:       TestMode;
-  prNumber?:      number;
-  prUrl?:         string;
-  branchName?:    string;
-  testCases?:     string;          // AI-generated test cases
-  githubUrl?:     string;
+  issueNumber:      number;
+  title:            string;
+  stage:            TicketStage;
+  createdBy:        string;          // Slack user ID of creator
+  assigneeSlackId?: string;          // Slack user ID of developer assignee
+  assigneeName?:    string;          // Human-readable developer name
+  testerSlackId?:   string;          // Slack user ID of tester (separate from developer)
+  testerName?:      string;          // Human-readable tester name
+  assigneeRole:     AssigneeRole;
+  developerMode:    DeveloperMode;
+  testMode:         TestMode;
+  prNumber?:        number;
+  prUrl?:           string;
+  branchName?:      string;
+  testCases?:       string;          // AI-generated test cases
+  githubUrl?:       string;
+  notionUrl?:       string;          // Notion doc URL (set by agent)
   // Timestamps for SLA tracking
-  createdAt:      Date;
-  stageChangedAt: Date;
-  updatedAt:      Date;
+  createdAt:        Date;
+  stageChangedAt:   Date;
+  updatedAt:        Date;
   // Stage history for audit trail
-  history:        StageEvent[];
+  history:          StageEvent[];
 }
 
 export interface StageEvent {

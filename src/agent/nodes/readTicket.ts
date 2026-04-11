@@ -1,5 +1,6 @@
 import { AgentState } from "../state.js";
 import { GitHubIssuesClient } from "../../tools/github-issues.js";
+import { getCommenter } from "../../tools/issueCommenter.js";
 
 export async function readTicket(state: AgentState): Promise<Partial<AgentState>> {
   const issues = new GitHubIssuesClient();
@@ -16,10 +17,9 @@ export async function readTicket(state: AgentState): Promise<Partial<AgentState>
   await issues.addLabel(issueNumber, "in-progress");
   console.log(`[readTicket] ✓ Label "in-progress" added`);
 
-  await issues.addComment(
-    issueNumber,
-    `🤖 **AI Engineering Agent** has started working on this issue.`
-  );
+  // Start progress comment — all future stages update this same comment
+  const commenter = getCommenter(issueNumber);
+  await commenter.started();
 
   return {
     ticket,

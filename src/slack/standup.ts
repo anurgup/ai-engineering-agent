@@ -141,6 +141,38 @@ export function scheduleSLAChecker(): void {
   console.log(`[sla] SLA checker scheduled (every 30min)`);
 }
 
+// ── Notion smart sync — runs every 6h, costs nothing if no changes ────────────
+
+/**
+ * Checks Notion for pages changed since last index.
+ * - 0 changes → 1 cheap API call, nothing else
+ * - N changes → embeds + pushes only those N pages to Pinecone
+ */
+export function scheduleNotionSync(): void {
+  const INTERVAL_MS = 6 * 60 * 60 * 1000;  // 6 hours
+
+  const run = async () => {
+    try {
+      const { smartSyncNotion } = await import("../agent/nodes/readNotion.js");
+      const result = await smartSyncNotion();
+
+      if (result.checked === 0) {
+        console.log(`[notionSync] ✅ No Notion changes detected — Pinecone already up to date`);
+      } else if (result.checked === -1) {
+        console.log(`[notionSync] ✅ Full reindex complete (${result.updated} pages)`);
+      } else {
+        console.log(`[notionSync] ✅ Synced ${result.updated} changed page(s) to Pinecone`);
+      }
+    } catch (err) {
+      console.warn(`[notionSync] ⚠ Sync failed:`, (err as Error).message);
+    }
+  };
+
+  // Run once after 6h, then every 6h
+  setInterval(() => run(), INTERVAL_MS);
+  console.log(`[notionSync] Smart sync scheduled (every 6h — only syncs changed pages)`);
+}
+
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 function hoursAgo(date: Date): number {

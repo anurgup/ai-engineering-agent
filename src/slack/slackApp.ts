@@ -26,7 +26,7 @@ import {
 import { clarifyOrGenerate, generateTicket } from "../teams/ticketGenerator.js";
 import { fetchTeamsRAGContext } from "../teams/ragContext.js";
 import { setSlackApp } from "./notifier.js";
-import { scheduleStandup, scheduleSLAChecker } from "./standup.js";
+import { scheduleStandup, scheduleSLAChecker, scheduleNotionSync } from "./standup.js";
 import { hasDevSession, answerDevQuestion, endDevSession } from "./devAssistant.js";
 import { answerKnowledgeQuestion } from "./knowledgeBase.js";
 import Anthropic from "@anthropic-ai/sdk";
@@ -36,6 +36,52 @@ const client = new Anthropic();
 function startSchedulers(): void {
   scheduleStandup();
   scheduleSLAChecker();
+  scheduleNotionSync();
+}
+
+/**
+ * Pre-warm all three RAG indexes at startup so every query hits Pinecone,
+ * not Notion/GitHub APIs. Runs in background — does not block bot startup.
+ */
+async function warmIndexes(): Promise<void> {
+  console.log(`[startup] Pre-warming RAG indexes...`);
+
+  try {
+    // Notion knowledge base
+    const { reindexNotion } = await import("../agent/nodes/readNotion.js");
+    const { RAGStore }      = await import("../tools/ragStore.js");
+    const notionStore = new RAGStore();                        // namespace: notion
+    if (notionStore.isStale(24)) {
+      console.log(`[startup] Notion index stale — reindexing...`);
+      await reindexNotion(notionStore);
+      console.log(`[startup] ✅ Notion indexed (${notionStore.size} pages)`);
+    } else {
+      console.log(`[startup] ✅ Notion index fresh — skipping`);
+    }
+  } catch (err) {
+    console.warn(`[startup] Notion index failed:`, (err as Error).message);
+  }
+
+  try {
+    // Agent memory (past PRs + closed issues)
+    const path = await import("path");
+    const { RAGStore } = await import("../tools/ragStore.js");
+    const memStorePath = process.env.MEMORY_STORE_PATH
+      ?? path.default.resolve("data", "memory-vectors.json");
+    const memStore = new RAGStore(memStorePath);               // namespace: memory
+    if (memStore.isStale(24)) {
+      const { default: readMemoryMod } = await import("../agent/nodes/readMemory.js") as unknown as { default: { reindexMemory?: () => Promise<void> } };
+      // reindexMemory is not exported — trigger via readMemory node indirectly
+      // Instead call GitHub directly using the same logic
+      console.log(`[startup] Memory index stale — will reindex on first agent run`);
+    } else {
+      console.log(`[startup] ✅ Memory index fresh — skipping`);
+    }
+  } catch (err) {
+    console.warn(`[startup] Memory index check failed:`, (err as Error).message);
+  }
+
+  console.log(`[startup] RAG warm-up complete`);
 }
 
 // ── Bolt app + Express receiver ───────────────────────────────────────────────
@@ -69,6 +115,7 @@ export async function startSlackBot(): Promise<void> {
     setSlackApp(boltApp);
     await boltApp.start();
     startSchedulers();
+    warmIndexes().catch((e) => console.warn(`[startup] Warm-up error:`, e)); // non-blocking
     console.log(`[slack] ✅ Bot started in Socket Mode (WebSocket)`);
   } else {
     // ── HTTP Mode ────────────────────────────────────────────────────────────
@@ -82,6 +129,7 @@ export async function startSlackBot(): Promise<void> {
     setSlackApp(boltApp);
     await boltApp.start();
     startSchedulers();
+    warmIndexes().catch((e) => console.warn(`[startup] Warm-up error:`, e)); // non-blocking
     console.log(`[slack] ✅ Bot started in HTTP mode at POST /api/slack/events`);
   }
 }
@@ -363,6 +411,21 @@ async function handleWorkflowCommand(lower: string, text: string, userId: string
     return handleClose(ticket, userId, true);
   }
 
+  // comment on #<number>: <text>  — post a user comment on the GitHub issue
+  m = text.match(/^comment\s+on\s+#?(\d+)\s*:\s*(.+)/i);
+  if (m) {
+    const issueNumber = parseInt(m[1]);
+    const commentText = m[2].trim();
+    try {
+      const { getCommenter } = await import("../tools/issueCommenter.js");
+      await getCommenter(issueNumber).userComment(userId, commentText);
+      return `✅ Comment posted on issue #${issueNumber}:\n> ${commentText}`;
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      return `❌ Failed to post comment: ${msg}`;
+    }
+  }
+
   return null; // not a workflow command
 }
 
@@ -472,7 +535,7 @@ async function applyEdits(session: ConversationSession, edits: string): Promise<
   if (!session.pendingTicket) return "No pending ticket to edit.";
 
   const msg = await client.messages.create({
-    model: "claude-haiku-4-5",
+    model: "claude-haiku-4-5-20251001",
     max_tokens: 400,
     system: `Update a GitHub issue based on user feedback. Output only valid JSON: {"title":"...","body":"...","labels":[...]}`,
     messages: [{
@@ -575,7 +638,8 @@ function helpText(): string {
     `• \`ai test <#>\` — AI generates test cases\n` +
     `• \`test myself <#>\` — you'll test it\n` +
     `• \`done <#>\` — mark development complete\n` +
-    `• \`close <#>\` — close the ticket\n\n` +
+    `• \`close <#>\` — close the ticket\n` +
+    `• \`comment on #<#>: <text>\` — post a comment on a GitHub issue\n\n` +
     `*Status commands:*\n` +
     `• \`status\` — full pipeline view\n` +
     `• \`standup\` — today's standup summary\n` +

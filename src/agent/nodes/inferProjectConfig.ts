@@ -1,7 +1,7 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { AgentState, ProjectConfig } from "../state.js";
 
-const MODEL = "claude-haiku-4-5";
+const MODEL = "claude-haiku-4-5-20251001";
 
 /**
  * If no project.yml was found, try to infer the tech stack from the

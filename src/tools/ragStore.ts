@@ -1,10 +1,24 @@
 /**
- * Simple JSON-file-backed vector store with cosine similarity search.
- * No external service required — works locally and on Railway/Render.
+ * Pinecone-backed vector store.
  *
- * File location: data/notion-vectors.json (override via NOTION_VECTOR_STORE_PATH)
+ * One Pinecone index ("agent-rag") with three namespaces:
+ *   notion  — Notion pages (architecture, cluster, market docs)
+ *   memory  — Past PRs + closed issues
+ *   repo    — Repo file signatures (dev assistant)
+ *
+ * Timestamps + counts are stored in data/index-meta.json (lightweight, no vectors).
+ * This survives Railway redeploys; the vectors themselves live in Pinecone permanently.
+ *
+ * Required env vars:
+ *   PINECONE_API_KEY   — from app.pinecone.io
+ *   PINECONE_INDEX     — index name (default: "agent-rag")
+ *
+ * Dimension: 512 (Voyage AI voyage-3-lite)
+ * Metric:    cosine
  */
 
+import { Pinecone } from "@pinecone-database/pinecone";
+import type { Index } from "@pinecone-database/pinecone";
 import * as fs   from "fs";
 import * as path from "path";
 
@@ -15,112 +29,206 @@ export interface VectorEntry {
   metadata: Record<string, unknown>;
 }
 
-const META_ID = "__meta__";
+// ── Constants ─────────────────────────────────────────────────────────────────
+
+const INDEX_NAME  = process.env.PINECONE_INDEX ?? "agent-rag";
+const DIMENSION   = 512;   // voyage-3-lite output dimension
+const UPSERT_BATCH = 100;  // Pinecone max per upsert call
+const META_PATH   = path.resolve("data", "index-meta.json");
+
+// ── Pinecone singleton ────────────────────────────────────────────────────────
+
+let _pc:    Pinecone | null = null;
+let _index: Index    | null = null;
+
+function getPineconeClient(): Pinecone {
+  if (!_pc) {
+    const apiKey = process.env.PINECONE_API_KEY;
+    if (!apiKey) throw new Error("PINECONE_API_KEY is not set. Get a free key at https://app.pinecone.io");
+    _pc = new Pinecone({ apiKey });
+  }
+  return _pc;
+}
+
+async function getPineconeIndex(): Promise<Index> {
+  if (_index) return _index;
+
+  const pc = getPineconeClient();
+
+  // Create index if it doesn't exist yet (free serverless, us-east-1)
+  try {
+    const list = await pc.listIndexes();
+    const exists = (list.indexes ?? []).some((i) => i.name === INDEX_NAME);
+
+    if (!exists) {
+      console.log(`[ragStore] Creating Pinecone index "${INDEX_NAME}" (dimension=${DIMENSION})...`);
+      await pc.createIndex({
+        name:      INDEX_NAME,
+        dimension: DIMENSION,
+        metric:    "cosine",
+        spec: {
+          serverless: { cloud: "aws", region: "us-east-1" },
+        },
+      });
+
+      // Poll until ready (usually < 30s)
+      console.log(`[ragStore] Waiting for index to be ready...`);
+      for (let i = 0; i < 30; i++) {
+        const desc = await pc.describeIndex(INDEX_NAME);
+        if (desc.status?.ready) break;
+        await new Promise((r) => setTimeout(r, 2000));
+      }
+      console.log(`[ragStore] ✅ Pinecone index "${INDEX_NAME}" is ready`);
+    }
+  } catch (err) {
+    // If already exists or non-fatal, log and continue
+    console.warn(`[ragStore] Index init warning:`, (err as Error).message);
+  }
+
+  _index = pc.index(INDEX_NAME);
+  return _index;
+}
+
+// ── Meta JSON (timestamps + counts — no vectors) ──────────────────────────────
+
+interface IndexMeta {
+  [namespace: string]: { indexedAt: string; count: number };
+}
+
+function loadMeta(): IndexMeta {
+  try {
+    if (fs.existsSync(META_PATH)) {
+      return JSON.parse(fs.readFileSync(META_PATH, "utf-8")) as IndexMeta;
+    }
+  } catch { /* fresh start */ }
+  return {};
+}
+
+function writeMeta(meta: IndexMeta): void {
+  fs.mkdirSync(path.dirname(META_PATH), { recursive: true });
+  fs.writeFileSync(META_PATH, JSON.stringify(meta, null, 2));
+}
+
+// ── storePath → namespace mapping (backward compat with old callers) ──────────
+
+function resolveNamespace(storePath?: string): string {
+  if (!storePath) return "notion";
+  const base = path.basename(storePath, ".json");        // "notion-vectors"
+  if (base.includes("memory") || base.includes("mem")) return "memory";
+  if (base.includes("repo"))                             return "repo";
+  return "notion";
+}
+
+// ── RAGStore ──────────────────────────────────────────────────────────────────
 
 export class RAGStore {
-  private entries: VectorEntry[] = [];
-  private readonly storePath: string;
+  private readonly namespace: string;
+  private buffer: VectorEntry[] = [];   // pending upserts, flushed on save()
+  private cachedCount: number;
 
   constructor(storePath?: string) {
-    this.storePath =
-      storePath ??
-      process.env.NOTION_VECTOR_STORE_PATH ??
-      path.resolve("data", "notion-vectors.json");
-
-    this.load();
+    this.namespace   = resolveNamespace(storePath);
+    const meta       = loadMeta();
+    this.cachedCount = meta[this.namespace]?.count ?? 0;
   }
 
-  // ── Persistence ────────────────────────────────────────────────────────────
+  // ── Write (sync buffer, async flush) ───────────────────────────────────────
 
-  private load(): void {
-    try {
-      if (fs.existsSync(this.storePath)) {
-        const raw = fs.readFileSync(this.storePath, "utf-8");
-        this.entries = JSON.parse(raw) as VectorEntry[];
-      }
-    } catch {
-      this.entries = [];
-    }
-  }
-
-  save(): void {
-    const dir = path.dirname(this.storePath);
-    fs.mkdirSync(dir, { recursive: true });
-    fs.writeFileSync(this.storePath, JSON.stringify(this.entries, null, 2));
-  }
-
-  // ── CRUD ───────────────────────────────────────────────────────────────────
-
+  /** Stage an entry for upsert. Call save() to flush to Pinecone. */
   upsert(entry: VectorEntry): void {
-    const idx = this.entries.findIndex((e) => e.id === entry.id);
-    if (idx >= 0) {
-      this.entries[idx] = entry;
-    } else {
-      this.entries.push(entry);
+    this.buffer.push(entry);
+    this.cachedCount++;
+  }
+
+  /** Flush buffered upserts to Pinecone. Must be awaited. */
+  async save(): Promise<void> {
+    if (this.buffer.length === 0) return;
+
+    const index = await getPineconeIndex();
+    const ns    = index.namespace(this.namespace);
+
+    for (let i = 0; i < this.buffer.length; i += UPSERT_BATCH) {
+      const batch = this.buffer.slice(i, i + UPSERT_BATCH);
+      await ns.upsert({
+        records: batch.map((e) => ({
+          id:       e.id,
+          values:   e.vector,
+          metadata: { ...e.metadata, __text: e.text },
+        })),
+      });
     }
+
+    console.log(`[ragStore:${this.namespace}] Flushed ${this.buffer.length} vectors to Pinecone`);
+    this.buffer = [];
   }
 
-  clear(): void {
-    this.entries = [];
-  }
+  // ── Search (async — queries Pinecone) ──────────────────────────────────────
 
-  get size(): number {
-    // exclude the __meta__ entry from count
-    return this.entries.filter((e) => e.id !== META_ID).length;
-  }
-
-  // ── Search ─────────────────────────────────────────────────────────────────
-
-  search(
+  async search(
     queryVector: number[],
     topK = 5
-  ): Array<VectorEntry & { score: number }> {
-    return this.entries
-      .filter((e) => e.id !== META_ID && e.vector.length > 0)
-      .map((e) => ({ ...e, score: cosineSimilarity(queryVector, e.vector) }))
-      .sort((a, b) => b.score - a.score)
-      .slice(0, topK);
+  ): Promise<Array<VectorEntry & { score: number }>> {
+    const index  = await getPineconeIndex();
+    const result = await index.namespace(this.namespace).query({
+      vector:          queryVector,
+      topK,
+      includeMetadata: true,
+    });
+
+    return (result.matches ?? []).map((m) => {
+      const raw  = { ...(m.metadata ?? {}) } as Record<string, unknown>;
+      const text = (raw.__text as string) ?? "";
+      delete raw.__text;
+      return {
+        id:       m.id,
+        text,
+        vector:   [],   // Pinecone doesn't return vectors in query results
+        metadata: raw,
+        score:    m.score ?? 0,
+      };
+    });
   }
 
-  // ── Metadata ───────────────────────────────────────────────────────────────
+  // ── Delete ─────────────────────────────────────────────────────────────────
+
+  /** Delete all vectors in this namespace. */
+  async clear(): Promise<void> {
+    try {
+      const index = await getPineconeIndex();
+      await index.namespace(this.namespace).deleteAll();
+    } catch (err) {
+      console.warn(`[ragStore:${this.namespace}] clear() warning:`, (err as Error).message);
+    }
+    this.buffer      = [];
+    this.cachedCount = 0;
+  }
+
+  // ── Size ───────────────────────────────────────────────────────────────────
+
+  /** Cached count from last reindex. Updated by setLastIndexed(). */
+  get size(): number {
+    return this.cachedCount;
+  }
+
+  // ── Timestamps ─────────────────────────────────────────────────────────────
 
   getLastIndexed(): Date | null {
-    const meta = this.entries.find((e) => e.id === META_ID);
-    if (meta?.metadata?.indexedAt) {
-      return new Date(meta.metadata.indexedAt as string);
-    }
-    return null;
+    const ts = loadMeta()[this.namespace]?.indexedAt;
+    return ts ? new Date(ts) : null;
   }
 
   setLastIndexed(): void {
-    this.upsert({
-      id:       META_ID,
-      text:     "",
-      vector:   [],
-      metadata: { indexedAt: new Date().toISOString() },
-    });
+    const meta = loadMeta();
+    meta[this.namespace] = {
+      indexedAt: new Date().toISOString(),
+      count:     this.cachedCount,
+    };
+    writeMeta(meta);
   }
 
   isStale(maxAgeHours = 24): boolean {
     const last = this.getLastIndexed();
     if (!last) return true;
-    const ageMs = Date.now() - last.getTime();
-    return ageMs > maxAgeHours * 60 * 60 * 1000;
+    return Date.now() - last.getTime() > maxAgeHours * 3_600_000;
   }
-}
-
-// ── Cosine similarity ─────────────────────────────────────────────────────────
-
-function cosineSimilarity(a: number[], b: number[]): number {
-  if (a.length !== b.length || a.length === 0) return 0;
-
-  let dot = 0, normA = 0, normB = 0;
-  for (let i = 0; i < a.length; i++) {
-    dot   += a[i] * b[i];
-    normA += a[i] * a[i];
-    normB += b[i] * b[i];
-  }
-
-  const denom = Math.sqrt(normA) * Math.sqrt(normB);
-  return denom === 0 ? 0 : dot / denom;
 }

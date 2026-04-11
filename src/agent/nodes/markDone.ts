@@ -1,5 +1,6 @@
 import { AgentState } from "../state.js";
 import { GitHubIssuesClient } from "../../tools/github-issues.js";
+import { getCommenter } from "../../tools/issueCommenter.js";
 
 export async function markDone(state: AgentState): Promise<Partial<AgentState>> {
   const issues = new GitHubIssuesClient();
@@ -9,17 +10,7 @@ export async function markDone(state: AgentState): Promise<Partial<AgentState>> 
 
   console.log(`\n[markDone] Closing GitHub Issue #${ticket.number}...`);
 
-  const commentLines = [
-    `🤖 **AI Engineering Agent** completed this issue.`,
-    ``,
-    `**Pull Request:** ${pr.url}`,
-  ];
-
-  if (doc) {
-    commentLines.push(`**Documentation:** ${doc.url}`);
-  }
-
-  await issues.addComment(ticket.number, commentLines.join("\n"));
+  await getCommenter(ticket.number).done();
   await issues.removeLabel(ticket.number, "in-progress");
   await issues.addLabel(ticket.number, "done");
   await issues.closeIssue(ticket.number);

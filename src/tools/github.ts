@@ -34,9 +34,54 @@ export class GitHubClient {
 
     // Inject token into remote URL so pushes are authenticated
     const authenticatedRemote = `https://${token}@github.com/${owner}/${repo}.git`;
-    this.git.remote(["set-url", "origin", authenticatedRemote]).catch(() => {
-      // Remote may not be set yet — ignore, will be caught at push time
-    });
+    this.git.remote(["set-url", "origin", authenticatedRemote]).catch(() => {});
+  }
+
+  /**
+   * Ensures the local repo exists and is ready:
+   *   - Clones if the directory doesn't exist or isn't a git repo
+   *   - Creates an initial commit + base branch if the repo is empty
+   * Must be called before any git operations.
+   */
+  async ensureRepo(): Promise<void> {
+    const token = process.env.GITHUB_TOKEN!;
+    const authenticatedRemote = `https://${token}@github.com/${this.owner}/${this.repo}.git`;
+
+    // ── Clone if not present ──────────────────────────────────────────────────
+    const isGitRepo = fs.existsSync(path.join(this.localRepoPath, ".git"));
+    if (!isGitRepo) {
+      console.log(`[github] Cloning ${this.owner}/${this.repo} into ${this.localRepoPath}...`);
+      fs.mkdirSync(this.localRepoPath, { recursive: true });
+      const rootGit = simpleGit();
+      await rootGit.clone(authenticatedRemote, this.localRepoPath);
+      this.git = simpleGit(this.localRepoPath);
+      console.log(`[github] ✅ Cloned`);
+    }
+
+    // Always ensure authenticated remote
+    await this.git.remote(["set-url", "origin", authenticatedRemote]).catch(() => {});
+
+    // ── Handle empty repo (no commits yet) ────────────────────────────────────
+    try {
+      await this.git.revparse(["HEAD"]);
+      // HEAD exists — repo has commits, nothing to do
+    } catch {
+      console.log(`[github] Empty repo detected — creating initial commit on ${this.baseBranch}`);
+      await this.git.raw(["checkout", "-b", this.baseBranch]);
+
+      // Write a minimal README so the branch has a commit
+      const readmePath = path.join(this.localRepoPath, "README.md");
+      if (!fs.existsSync(readmePath)) {
+        fs.writeFileSync(readmePath, `# ${this.repo}\n\nAI-generated Spring Boot project.\n`);
+      }
+
+      await this.git.add("README.md");
+      await this.git.raw(["config", "user.email", "agent@ai-dev.bot"]);
+      await this.git.raw(["config", "user.name",  "AI Engineering Agent"]);
+      await this.git.commit("chore: initial commit");
+      await this.git.push("origin", this.baseBranch, ["--set-upstream"]);
+      console.log(`[github] ✅ Initial commit pushed`);
+    }
   }
 
   branchName(ticketKey: string, summary: string): string {
@@ -54,6 +99,9 @@ export class GitHubClient {
     summary: string,
     files: GeneratedFile[]
   ): Promise<string> {
+    // Clones repo if not present locally; creates initial commit if repo is empty
+    await this.ensureRepo();
+
     const branch = this.branchName(ticketKey, summary);
 
     // Ensure we're on the base branch and up to date
@@ -66,6 +114,10 @@ export class GitHubClient {
       console.log(`[github] Branch "${branch}" already exists locally — deleting and recreating`);
       await this.git.deleteLocalBranch(branch, true); // true = force delete
     }
+
+    // Ensure git user is configured (required on Railway)
+    await this.git.raw(["config", "user.email", "agent@ai-dev.bot"]).catch(() => {});
+    await this.git.raw(["config", "user.name",  "AI Engineering Agent"]).catch(() => {});
 
     // Create and checkout the new feature branch
     await this.git.checkoutLocalBranch(branch);
@@ -110,5 +162,30 @@ export class GitHubClient {
       branch,
       title: data.title,
     };
+  }
+
+  /**
+   * Post a comment on a GitHub issue.
+   * Used by the agent to report progress at each stage.
+   */
+  async addComment(issueNumber: number, body: string): Promise<void> {
+    await this.octokit.issues.createComment({
+      owner: this.owner,
+      repo:  this.repo,
+      issue_number: issueNumber,
+      body,
+    });
+  }
+
+  /**
+   * Update an existing comment by ID.
+   */
+  async updateComment(commentId: number, body: string): Promise<void> {
+    await this.octokit.issues.updateComment({
+      owner:      this.owner,
+      repo:       this.repo,
+      comment_id: commentId,
+      body,
+    });
   }
 }

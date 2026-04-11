@@ -221,6 +221,74 @@ export class NotionClient {
     return pages;
   }
 
+  /**
+   * Fetch only pages edited after `since`.
+   * Uses Notion's last_edited_time filter — one cheap API call.
+   * Returns [] immediately if nothing changed.
+   */
+  async getPagesSince(since: Date): Promise<NotionPage[]> {
+    const sinceISO = since.toISOString();
+    const pages: NotionPage[] = [];
+    let cursor: string | undefined = undefined;
+
+    while (true) {
+      const response = await this.client.search({
+        filter:     { property: "object", value: "page" },
+        sort:       { direction: "descending", timestamp: "last_edited_time" },
+        page_size:  50,
+        ...(cursor ? { start_cursor: cursor } : {}),
+      });
+
+      let reachedOld = false;
+
+      for (const result of response.results) {
+        if (result.object !== "page") continue;
+
+        const page = result as {
+          id:              string;
+          url:             string;
+          last_edited_time: string;
+          properties?: {
+            title?: { title?: NotionRichText[] };
+            Name?:  { title?: NotionRichText[] };
+          };
+        };
+
+        // Results are sorted newest-first — stop once we hit pages older than `since`
+        if (new Date(page.last_edited_time) <= since) {
+          reachedOld = true;
+          break;
+        }
+
+        const titleProp = page.properties?.title ?? page.properties?.Name;
+        const title =
+          (titleProp?.title ?? []).map((t) => t.plain_text ?? "").join("") || "Untitled";
+
+        let excerpt = "";
+        try {
+          const blocksResponse = await this.client.blocks.children.list({
+            block_id:  page.id,
+            page_size: BLOCKS_PER_PAGE,
+          });
+          excerpt = blocksResponse.results
+            .map((b) => extractPlainText(b as NotionBlock))
+            .filter(Boolean)
+            .join(" ")
+            .slice(0, EXCERPT_MAX_CHARS);
+        } catch {
+          // non-fatal
+        }
+
+        pages.push({ id: page.id, title, url: page.url, excerpt });
+      }
+
+      if (reachedOld || !response.has_more || !response.next_cursor) break;
+      cursor = response.next_cursor;
+    }
+
+    return pages;
+  }
+
   async createPage(title: string, markdownContent: string): Promise<{ id: string; url: string }> {
     const blocks = markdownToNotionBlocks(markdownContent);
 

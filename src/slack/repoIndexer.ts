@@ -67,7 +67,7 @@ export async function indexRepoIfNeeded(force = false): Promise<void> {
 
   if (files.length === 0) return;
 
-  store.clear();
+  await store.clear();
 
   // Build text chunks for each file
   const chunks: { id: string; text: string; metadata: Record<string, unknown> }[] = [];
@@ -113,7 +113,7 @@ export async function indexRepoIfNeeded(force = false): Promise<void> {
     store.upsert({ ...chunks[i], vector: vectors[i] });
   }
   store.setLastIndexed();
-  store.save();
+  await store.save();
 
   console.log(`[repoIndexer] ✅ Indexed ${chunks.length} files into repo vector store`);
 }
@@ -129,8 +129,7 @@ export async function searchRepo(
   const store = getRepoStore();
   if (store.size === 0) return [];
 
-  return store
-    .search(queryVector, topK)
+  return (await store.search(queryVector, topK))
     .filter((h) => h.score > 0.4)
     .map((h) => ({
       path:       (h.metadata.path       as string)   ?? h.id,

@@ -3,6 +3,7 @@ import { AgentState } from "../state.js";
 import { NotionClient } from "../../tools/notion.js";
 import { buildNotionDocPrompt } from "../../prompts/notionDoc.js";
 import { addPageToIndex } from "./readNotion.js";
+import { getCommenter } from "../../tools/issueCommenter.js";
 
 const MODEL = "claude-haiku-4-5-20251001";
 
@@ -48,6 +49,8 @@ export async function updateNotion(state: AgentState): Promise<Partial<AgentStat
       logs: [`Notion page creation failed (non-fatal)`],
     };
   }
+
+  await getCommenter(state.ticket!.number).notionUpdated(notionDoc.url);
 
   return {
     notionDoc,

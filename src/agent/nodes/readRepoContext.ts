@@ -1,6 +1,7 @@
 import * as fs from "fs";
 import * as path from "path";
 import { AgentState, RepoFile } from "../state.js";
+import { getCommenter } from "../../tools/issueCommenter.js";
 
 const MAX_FILE_CHARS = 8000;   // truncate very large files
 const MAX_TOTAL_CHARS = 40000; // cap total context sent to Claude
@@ -38,6 +39,13 @@ export async function readRepoContext(state: AgentState): Promise<Partial<AgentS
   }
 
   console.log(`[readRepoContext] ✓ Loaded ${repoFiles.length} file(s) — ${totalChars.toLocaleString()} total chars`);
+
+  // Post progress comment
+  const issueNumber = state.ticket!.number;
+  await getCommenter(issueNumber).readingFiles(
+    repoFiles.length,
+    repoFiles.map((f) => f.path)
+  );
 
   return {
     repoContext: repoFiles,
