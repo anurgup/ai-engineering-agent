@@ -31,7 +31,26 @@ import { hasDevSession, answerDevQuestion, endDevSession } from "./devAssistant.
 import { answerKnowledgeQuestion } from "./knowledgeBase.js";
 import Anthropic from "@anthropic-ai/sdk";
 
+// ── Multi-agent imports ───────────────────────────────────────────────────────
+import { initOrchestrator } from "../agents/orchestrator/index.js";
+import { initKnowledgeAgent, warmKnowledgeIndexes } from "../agents/knowledge/index.js";
+import { initStandupAgent } from "../agents/standup/index.js";
+import { initTicketAgent } from "../agents/ticket/index.js";
+import { initCodeAgent } from "../agents/code/index.js";
+
 const client = new Anthropic();
+
+function startAgents(app: App): void {
+  // Orchestrator must be first — it owns the Bolt App reference
+  initOrchestrator(app);
+  initKnowledgeAgent();
+  initStandupAgent();
+  initTicketAgent();
+  initCodeAgent();
+  // Warm RAG indexes in background
+  warmKnowledgeIndexes().catch((e) => console.warn("[startup] Warm-up error:", e));
+  console.log("[startup] ✅ All agents initialized");
+}
 
 function startSchedulers(): void {
   scheduleStandup();
@@ -112,10 +131,8 @@ export async function startSlackBot(): Promise<void> {
     });
 
     registerHandlers(boltApp);
-    setSlackApp(boltApp);
     await boltApp.start();
-    startSchedulers();
-    warmIndexes().catch((e) => console.warn(`[startup] Warm-up error:`, e)); // non-blocking
+    startAgents(boltApp);
     console.log(`[slack] ✅ Bot started in Socket Mode (WebSocket)`);
   } else {
     // ── HTTP Mode ────────────────────────────────────────────────────────────
@@ -126,10 +143,8 @@ export async function startSlackBot(): Promise<void> {
 
     boltApp = new App({ token: botToken, receiver });
     registerHandlers(boltApp);
-    setSlackApp(boltApp);
     await boltApp.start();
-    startSchedulers();
-    warmIndexes().catch((e) => console.warn(`[startup] Warm-up error:`, e)); // non-blocking
+    startAgents(boltApp);
     console.log(`[slack] ✅ Bot started in HTTP mode at POST /api/slack/events`);
   }
 }
