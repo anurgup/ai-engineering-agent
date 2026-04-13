@@ -12,7 +12,7 @@
  */
 
 import type { WorkflowTicket, TicketStage, AssigneeRole, SlackUser } from "./types.js";
-import { getTicket, saveTicket, findUserByName, registerUser, getUser } from "./store.js";
+import { getTicket, saveTicket, findUserByName, registerUser, getUser, getTicketsByStage, getStuckAITicketsFromDB } from "./store.js";
 import { notifyUser, notifyChannel, lookupSlackUser } from "../notifier.js";
 import { generateTestSuite, executeTestSuite, formatTestResults, formatTestSuitePreview } from "../testGenerator.js";
 import { reviewPR } from "../prReviewer.js";
@@ -801,6 +801,91 @@ const STAGE_EMOJI: Record<TicketStage, string> = {
   done:       "✅",
   blocked:    "🚫",
 };
+
+// ── Startup recovery — resume in-flight AI dev jobs killed by redeploy ────────
+
+export async function recoverInFlightJobs(): Promise<void> {
+  const owner = process.env.GITHUB_OWNER;
+  const repo  = process.env.GITHUB_REPO;
+  const token = process.env.GITHUB_TOKEN;
+  if (!owner || !repo || !token) return;
+
+  // Wait for MongoDB connection to settle
+  await new Promise((r) => setTimeout(r, 3000));
+
+  // Read directly from MongoDB — not in-memory store (which is empty right after restart)
+  const stuckTickets = await getStuckAITicketsFromDB();
+
+  if (stuckTickets.length === 0) return;
+  console.log(`[recovery] Found ${stuckTickets.length} AI in_dev ticket(s) — checking for existing PRs`);
+
+  for (const ticket of stuckTickets) {
+    try {
+      // Check if a PR already exists for this issue
+      const resp = await fetch(
+        `https://api.github.com/repos/${owner}/${repo}/pulls?state=open&per_page=20`,
+        { headers: { Authorization: `token ${token}`, Accept: "application/vnd.github+json" } }
+      );
+      if (!resp.ok) continue;
+
+      const prs = await resp.json() as Array<{ number: number; html_url: string; title: string; body?: string }>;
+      const pr  = prs.find(
+        (p) => p.title.includes(`#${ticket.issueNumber}`) ||
+               (p.body ?? "").includes(`#${ticket.issueNumber}`) ||
+               p.title.toLowerCase().includes(ticket.title.toLowerCase().slice(0, 20))
+      );
+
+      if (pr) {
+        // PR exists — AI finished before restart, just complete the transition
+        console.log(`[recovery] PR #${pr.number} found for ticket #${ticket.issueNumber} — completing transition`);
+        ticket.prNumber = pr.number;
+        ticket.prUrl    = pr.html_url;
+        saveTicket(ticket);
+
+        await transitionStage(ticket.issueNumber, "in_review", "ai", "AI finished coding");
+
+        const msg = [
+          `✅ *AI finished coding for #${ticket.issueNumber}: ${ticket.title}*`,
+          `🔀 PR: ${pr.html_url}`,
+          `_(Recovered after service restart)_`,
+          ``,
+          `What would you like to do next?`,
+          `• \`review ${ticket.issueNumber}\` — AI reviews the PR`,
+          `• \`merge ${ticket.issueNumber}\` — merge and deploy`,
+        ].join("\n");
+
+        await notifyUser(ticket.createdBy, msg);
+      } else {
+        // No PR — re-run the agent
+        console.log(`[recovery] No PR for ticket #${ticket.issueNumber} — re-running AI agent`);
+        const graph = buildGraph();
+        graph
+          .invoke({ ticketKey: String(ticket.issueNumber), autoApprove: true })
+          .then(async (result) => {
+            const updated = getTicket(ticket.issueNumber) ?? ticket;
+            if (result?.pullRequest) {
+              updated.prNumber = result.pullRequest.number;
+              updated.prUrl    = result.pullRequest.url;
+              saveTicket(updated);
+            }
+            await transitionStage(ticket.issueNumber, "in_review", "ai", "AI finished coding");
+            const msg = [
+              `✅ *AI finished coding for #${ticket.issueNumber}: ${ticket.title}*`,
+              updated.prUrl ? `🔀 PR: ${updated.prUrl}` : "",
+              `• \`review ${ticket.issueNumber}\` — AI reviews the PR`,
+              `• \`merge ${ticket.issueNumber}\` — merge and deploy`,
+            ].filter(Boolean).join("\n");
+            await notifyUser(ticket.createdBy, msg);
+          })
+          .catch((err: unknown) => {
+            console.warn(`[recovery] Re-run failed for #${ticket.issueNumber}:`, err);
+          });
+      }
+    } catch (err) {
+      console.warn(`[recovery] Failed for ticket #${ticket.issueNumber}:`, err);
+    }
+  }
+}
 
 async function postStatusUpdate(ticket: WorkflowTicket, note?: string): Promise<void> {
   // Skip status DM for "done" — the chat reply already shows completion

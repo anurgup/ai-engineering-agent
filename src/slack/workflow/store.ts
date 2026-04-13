@@ -234,6 +234,18 @@ export function getTicketsByStage(stage: WorkflowTicket["stage"]): WorkflowTicke
   return Object.values(store.tickets).filter((t) => t.stage === stage);
 }
 
+/** Query MongoDB directly for AI-owned tickets stuck in in_dev (survives restarts) */
+export async function getStuckAITicketsFromDB(): Promise<WorkflowTicket[]> {
+  try {
+    const { TicketModel: TM } = await getModels();
+    const tickets = await TM.find({ stage: "in_dev", developerMode: "ai" });
+    return tickets as unknown as WorkflowTicket[];
+  } catch {
+    // Fall back to in-memory if DB unavailable
+    return getTicketsByStage("in_dev").filter((t) => t.developerMode === "ai");
+  }
+}
+
 export function getTicketsByAssignee(slackUserId: string): WorkflowTicket[] {
   return Object.values(store.tickets).filter(
     (t) => t.assigneeSlackId === slackUserId && t.stage !== "done"

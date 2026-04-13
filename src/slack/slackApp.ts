@@ -30,7 +30,7 @@ import { scheduleStandup, scheduleSLAChecker, scheduleNotionSync } from "./stand
 import { hasDevSession, answerDevQuestion, endDevSession } from "./devAssistant.js";
 import { answerKnowledgeQuestion } from "./knowledgeBase.js";
 import Anthropic from "@anthropic-ai/sdk";
-import { createWorkflowTicket } from "./workflow/engine.js";
+import { createWorkflowTicket, recoverInFlightJobs } from "./workflow/engine.js";
 import { saveTicket } from "./workflow/store.js";
 
 // ── Multi-agent imports ───────────────────────────────────────────────────────
@@ -51,6 +51,8 @@ function startAgents(app: App): void {
   initCodeAgent();
   // Warm RAG indexes in background
   warmKnowledgeIndexes().catch((e) => console.warn("[startup] Warm-up error:", e));
+  // Recover any AI dev jobs killed by the previous redeploy
+  recoverInFlightJobs().catch((e) => console.warn("[startup] Recovery error:", e));
   console.log("[startup] ✅ All agents initialized");
 }
 
