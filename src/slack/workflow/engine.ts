@@ -762,13 +762,13 @@ export async function handleClose(
     }).catch(() => console.warn(`[workflow] Could not close GitHub issue #${ticket.issueNumber}`));
   }
 
-  // Notify creator
-  if (ticket.createdBy) {
+  // Only DM the creator if someone else closed the ticket (avoid duplicate messages)
+  if (ticket.createdBy && ticket.createdBy !== userId) {
     await notifyUser(
       ticket.createdBy,
       `✅ *Ticket #${ticket.issueNumber} is DONE!*\n` +
       `*${ticket.title}*\n` +
-      `${passed ? "All tests passed. " : ""}Issue closed on GitHub.`
+      `Closed by <@${userId}>. ${passed ? "All tests passed." : ""}`
     );
   }
 
@@ -791,6 +791,9 @@ const STAGE_EMOJI: Record<TicketStage, string> = {
 };
 
 async function postStatusUpdate(ticket: WorkflowTicket, note?: string): Promise<void> {
+  // Skip status DM for "done" — the chat reply already shows completion
+  if (ticket.stage === "done") return;
+
   const emoji    = STAGE_EMOJI[ticket.stage];
   const assignee = ticket.assigneeName ? ` · ${ticket.assigneeName}` : "";
   const noteStr  = note ? `\n_${note}_` : "";
