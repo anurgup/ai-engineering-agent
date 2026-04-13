@@ -135,6 +135,10 @@ export const AgentStateAnnotation = Annotation.Root({
     default: () => [],
     reducer: (existing, next) => [...existing, ...next],
   }),
+  fixInstructions: Annotation<string | undefined>({
+    default: () => undefined,
+    reducer: (_, next) => next,
+  }),
 });
 
 export type AgentState = typeof AgentStateAnnotation.State;

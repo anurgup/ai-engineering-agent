@@ -348,8 +348,8 @@ async function routeMessage(session: ConversationSession, text: string, userId: 
 async function handleWorkflowCommand(lower: string, text: string, userId: string): Promise<string | null> {
   const {
     createWorkflowTicket, handleNewTicket, handleAIDevelop, handleAssign,
-    handleHumanDevelop, handleDevDone, handleAIReview, handleDeploy,
-    handleAITest, handleUserTest, handleRunTests, handleAssignTester, handleClose,
+    handleHumanDevelop, handleDevDone, handleAIReview, handleMergePR, handleFixPR,
+    handleDeploy, handleAITest, handleUserTest, handleRunTests, handleAssignTester, handleClose,
   } = await import("./workflow/engine.js");
   const { getTicket } = await import("./workflow/store.js");
 
@@ -413,6 +413,24 @@ async function handleWorkflowCommand(lower: string, text: string, userId: string
     const ticket = getTicket(num) ?? await recoverTicketFromGitHub(num, userId);
     if (!ticket) return `❓ Ticket #${m[1]} not found on GitHub either.`;
     return handleAIReview(ticket, userId);
+  }
+
+  // merge <number> — merge the PR on GitHub
+  m = lower.match(/^merge\s+#?(\d+)$/);
+  if (m) {
+    const num = parseInt(m[1]);
+    const ticket = getTicket(num) ?? await recoverTicketFromGitHub(num, userId);
+    if (!ticket) return `❓ Ticket #${m[1]} not found.`;
+    return handleMergePR(ticket, userId);
+  }
+
+  // fix pr <number> [: instructions] — AI fixes review comments
+  m = text.match(/^fix\s+pr\s+#?(\d+)(?:\s*:\s*(.+))?$/i);
+  if (m) {
+    const num = parseInt(m[1]);
+    const ticket = getTicket(num) ?? await recoverTicketFromGitHub(num, userId);
+    if (!ticket) return `❓ Ticket #${m[1]} not found.`;
+    return handleFixPR(ticket, userId, m[2]?.trim());
   }
 
   // deploy <number>

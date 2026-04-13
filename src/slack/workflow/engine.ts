@@ -285,12 +285,120 @@ export async function handleAIReview(
     const review = await reviewPR(ticket.prNumber, ticket.issueNumber, ticket.title);
     return (
       `🔍 *AI Code Review for #${ticket.issueNumber}*\n\n${review}\n\n` +
-      `• \`deploy ${ticket.issueNumber}\` — deploy to staging\n` +
-      `• \`skip deploy ${ticket.issueNumber}\` — go to testing without deploy`
+      `• \`merge ${ticket.issueNumber}\` — merge PR and trigger CI/CD deploy\n` +
+      `• \`fix pr ${ticket.issueNumber}\` — AI fixes review comments and pushes update\n` +
+      `• \`deploy ${ticket.issueNumber}\` — deploy to staging (after merging manually)`
     );
   } catch (err) {
     return `❌ Review failed: ${err instanceof Error ? err.message : String(err)}`;
   }
+}
+
+/**
+ * Merge the PR on GitHub
+ */
+export async function handleMergePR(
+  ticket: WorkflowTicket,
+  userId: string
+): Promise<string> {
+  if (!ticket.prNumber) {
+    return `No PR found for #${ticket.issueNumber}. Run \`review ${ticket.issueNumber}\` first.`;
+  }
+
+  const owner = process.env.GITHUB_OWNER;
+  const repo  = process.env.GITHUB_REPO;
+  const token = process.env.GITHUB_TOKEN;
+
+  if (!owner || !repo || !token) {
+    return `❌ GitHub not configured.`;
+  }
+
+  try {
+    const resp = await fetch(
+      `https://api.github.com/repos/${owner}/${repo}/pulls/${ticket.prNumber}/merge`,
+      {
+        method:  "PUT",
+        headers: {
+          Authorization:  `token ${token}`,
+          Accept:         "application/vnd.github+json",
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          merge_method: "squash",
+          commit_title: `feat(#${ticket.issueNumber}): ${ticket.title}`,
+        }),
+      }
+    );
+
+    if (resp.status === 200) {
+      ticket.stage = "in_testing";
+      saveTicket(ticket);
+      return (
+        `✅ *PR #${ticket.prNumber} merged!*\n` +
+        `CI/CD will now build and deploy to Render.\n\n` +
+        `Once deployed:\n` +
+        `• \`i want to test ${ticket.issueNumber}\` — generate test cases\n` +
+        `• \`ai test ${ticket.issueNumber}\` — AI runs tests automatically\n` +
+        `• \`close ${ticket.issueNumber}\` — mark ticket as done`
+      );
+    } else if (resp.status === 405) {
+      return `❌ PR #${ticket.prNumber} is not mergeable yet (conflicts or checks failing). Fix issues first.`;
+    } else if (resp.status === 409) {
+      return `❌ PR #${ticket.prNumber} has merge conflicts. Use \`fix pr ${ticket.issueNumber}\` to resolve them.`;
+    } else {
+      const body = await resp.text();
+      return `❌ Merge failed (${resp.status}): ${body}`;
+    }
+  } catch (err) {
+    return `❌ Merge error: ${err instanceof Error ? err.message : String(err)}`;
+  }
+}
+
+/**
+ * Re-run AI agent to fix review comments on the PR
+ */
+export async function handleFixPR(
+  ticket: WorkflowTicket,
+  userId: string,
+  instructions?: string
+): Promise<string> {
+  if (!ticket.prNumber) {
+    return `No PR found for #${ticket.issueNumber}.`;
+  }
+
+  ticket.developerMode = "ai";
+  saveTicket(ticket);
+
+  const graph = buildGraph();
+  graph
+    .invoke({
+      ticketKey:   String(ticket.issueNumber),
+      autoApprove: true,
+      fixInstructions: instructions ?? "Fix any review comments and code quality issues on the PR",
+    })
+    .then(async (result) => {
+      const updated = getTicket(ticket.issueNumber) ?? ticket;
+      if (result?.pullRequest) {
+        updated.prNumber = result.pullRequest.number;
+        updated.prUrl    = result.pullRequest.url;
+        saveTicket(updated);
+      }
+
+      const msg = [
+        `✅ *AI fixed the PR for #${ticket.issueNumber}*`,
+        updated.prUrl ? `🔀 PR: ${updated.prUrl}` : "",
+        ``,
+        `• \`review ${ticket.issueNumber}\` — review the updated PR`,
+        `• \`merge ${ticket.issueNumber}\` — merge and deploy`,
+      ].filter(Boolean).join("\n");
+
+      await notifyUser(userId, msg);
+    })
+    .catch(async (err: unknown) => {
+      await notifyUser(userId, `❌ Fix failed for #${ticket.issueNumber}: ${err instanceof Error ? err.message : String(err)}`);
+    });
+
+  return `🔧 *AI is fixing the PR for #${ticket.issueNumber}*\nI'll notify you when the updated PR is ready.`;
 }
 
 /**
