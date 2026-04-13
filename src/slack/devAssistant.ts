@@ -265,37 +265,37 @@ async function buildRAGContext(question: string, session: DevSession): Promise<s
     }
   }
 
-  // 2. Past PRs (memory store)
-  const memoryStore = new RAGStore(
-    process.env.MEMORY_VECTOR_STORE_PATH ?? path.resolve("data", "memory-vectors.json")
-  );
-  if (memoryStore.size > 0) {
+  // 2. Past PRs (memory namespace in Pinecone — always query, don't rely on local size)
+  try {
+    const memoryStore = new RAGStore(
+      process.env.MEMORY_VECTOR_STORE_PATH ?? path.resolve("data", "memory-vectors.json")
+    );
     const memHits = (await memoryStore.search(queryVector, 2)).filter((h) => h.score > 0.5);
     if (memHits.length > 0) {
       sections.push("## Past PRs (similar work)");
       memHits.forEach((h) => {
-        const meta = h.metadata as { type?: string; number?: number; title?: string; filesChanged?: string[] };
+        const meta  = h.metadata as { type?: string; number?: number; title?: string; filesChanged?: string[] };
         const files = (meta.filesChanged ?? []).slice(0, 3).join(", ");
         sections.push(`- PR #${meta.number}: ${meta.title}${files ? ` (${files})` : ""}`);
       });
     }
-  }
+  } catch { /* Pinecone unavailable — skip silently */ }
 
   // 3. Notion docs — architecture + functional + domain knowledge
-  const notionStore = new RAGStore(
-    process.env.NOTION_VECTOR_STORE_PATH ?? path.resolve("data", "notion-vectors.json")
-  );
-  if (notionStore.size > 0) {
+  try {
+    const notionStore = new RAGStore(
+      process.env.NOTION_VECTOR_STORE_PATH ?? path.resolve("data", "notion-vectors.json")
+    );
     const notionHits = (await notionStore.search(queryVector, 3)).filter((h) => h.score > 0.45);
     if (notionHits.length > 0) {
-      sections.push("## Architecture & Domain Knowledge");
+      sections.push("## Architecture & Domain Knowledge (from Notion)");
       notionHits.forEach((h) => {
         const meta    = h.metadata as { title?: string; excerpt?: string };
-        const excerpt = (meta.excerpt ?? h.text).slice(0, 200);
+        const excerpt = (meta.excerpt ?? h.text).slice(0, 300);
         sections.push(`### ${meta.title ?? "Doc"}\n${excerpt}`);
       });
     }
-  }
+  } catch { /* Pinecone unavailable — skip silently */ }
 
   return sections.join("\n");
 }

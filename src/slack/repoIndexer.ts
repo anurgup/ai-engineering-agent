@@ -52,13 +52,35 @@ export async function indexRepoIfNeeded(force = false): Promise<void> {
   if (!process.env.VOYAGE_API_KEY) return;
 
   const store = getRepoStore();
+  // Use meta staleness only if meta actually exists — on Railway meta resets
   if (!force && !store.isStale(6) && store.size > 0) {
     return; // fresh enough
   }
 
+  // If local repo not present, try cloning from GitHub
   if (!fs.existsSync(REPO_PATH)) {
-    console.warn(`[repoIndexer] Repo not found at ${REPO_PATH} — skipping index`);
-    return;
+    const owner = process.env.GITHUB_OWNER;
+    const repo  = process.env.GITHUB_REPO;
+    const token = process.env.GITHUB_TOKEN;
+    if (owner && repo && token) {
+      try {
+        console.log(`[repoIndexer] Local repo not found — cloning ${owner}/${repo}...`);
+        const { simpleGit } = await import("simple-git");
+        fs.mkdirSync(REPO_PATH, { recursive: true });
+        await simpleGit().clone(
+          `https://${token}@github.com/${owner}/${repo}.git`,
+          REPO_PATH,
+          ["--depth", "1"]
+        );
+        console.log(`[repoIndexer] Cloned repo to ${REPO_PATH}`);
+      } catch (err) {
+        console.warn(`[repoIndexer] Clone failed:`, err);
+        return;
+      }
+    } else {
+      console.warn(`[repoIndexer] Repo not found at ${REPO_PATH} and GitHub not configured — skipping index`);
+      return;
+    }
   }
 
   console.log(`[repoIndexer] Indexing repo at ${REPO_PATH}...`);
@@ -127,8 +149,7 @@ export async function searchRepo(
   topK = 5
 ): Promise<Array<{ path: string; language: string; signatures: string[]; preview: string; score: number }>> {
   const store = getRepoStore();
-  if (store.size === 0) return [];
-
+  // Don't guard on size — local meta may be 0 on Railway but Pinecone has vectors
   return (await store.search(queryVector, topK))
     .filter((h) => h.score > 0.4)
     .map((h) => ({
