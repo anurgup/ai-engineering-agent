@@ -139,7 +139,9 @@ export class GitHubClient {
   async commitAndPush(branch: string, ticketKey: string, summary: string): Promise<void> {
     const message = `feat(${ticketKey}): ${summary}`;
     await this.git.commit(message);
-    await this.git.push("origin", branch, ["--set-upstream"]);
+    await this.git.push("origin", branch, ["--set-upstream", "--force-with-lease"]).catch(() =>
+      this.git.push("origin", branch, ["--set-upstream", "--force"])
+    );
   }
 
   async createPullRequest(
