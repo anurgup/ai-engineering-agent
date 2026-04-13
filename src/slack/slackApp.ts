@@ -342,11 +342,20 @@ async function handleWorkflowCommand(lower: string, text: string, userId: string
   } = await import("./workflow/engine.js");
   const { getTicket } = await import("./workflow/store.js");
 
-  // develop / ai develop <number>
+  // develop / ai develop <number> — also accepts bare "ai" or "develop" using most recent ticket
   let m = lower.match(/^(?:ai\s+)?develop\s+#?(\d+)$/);
   if (m) {
     const ticket = getTicket(parseInt(m[1]));
     if (!ticket) return `❓ Ticket #${m[1]} not found. Create it first by describing a feature.`;
+    return handleAIDevelop(ticket, userId);
+  }
+
+  // bare "ai" or "develop" — use most recent ticket
+  if (lower === "ai" || lower === "develop" || lower === "ai develop") {
+    const num = await findRecentTicket(userId);
+    if (!num) return `❓ No active ticket found. Please specify: \`develop #<number>\``;
+    const ticket = getTicket(num);
+    if (!ticket) return `❓ Ticket #${num} not found.`;
     return handleAIDevelop(ticket, userId);
   }
 
