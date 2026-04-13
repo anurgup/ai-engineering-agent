@@ -30,6 +30,8 @@ import { scheduleStandup, scheduleSLAChecker, scheduleNotionSync } from "./stand
 import { hasDevSession, answerDevQuestion, endDevSession } from "./devAssistant.js";
 import { answerKnowledgeQuestion } from "./knowledgeBase.js";
 import Anthropic from "@anthropic-ai/sdk";
+import { createWorkflowTicket } from "./workflow/engine.js";
+import { saveTicket } from "./workflow/store.js";
 
 // ── Multi-agent imports ───────────────────────────────────────────────────────
 import { initOrchestrator } from "../agents/orchestrator/index.js";
@@ -398,15 +400,17 @@ async function handleWorkflowCommand(lower: string, text: string, userId: string
   // review <number>
   m = lower.match(/^review\s+#?(\d+)$/);
   if (m) {
-    const ticket = getTicket(parseInt(m[1]));
-    if (!ticket) return `❓ Ticket #${m[1]} not found.`;
+    const num = parseInt(m[1]);
+    const ticket = getTicket(num) ?? await recoverTicketFromGitHub(num, userId);
+    if (!ticket) return `❓ Ticket #${m[1]} not found on GitHub either.`;
     return handleAIReview(ticket, userId);
   }
 
   // deploy <number>
   m = lower.match(/^(?:skip\s+)?deploy\s+#?(\d+)$/);
   if (m) {
-    const ticket = getTicket(parseInt(m[1]));
+    const num = parseInt(m[1]);
+    const ticket = getTicket(num) ?? await recoverTicketFromGitHub(num, userId);
     if (!ticket) return `❓ Ticket #${m[1]} not found.`;
     return handleDeploy(ticket, userId);
   }
@@ -464,9 +468,28 @@ async function handleWorkflowCommand(lower: string, text: string, userId: string
   // close <number>
   m = lower.match(/^close\s+#?(\d+)$/);
   if (m) {
-    const ticket = getTicket(parseInt(m[1]));
+    const num = parseInt(m[1]);
+    const ticket = getTicket(num) ?? await recoverTicketFromGitHub(num, userId);
     if (!ticket) return `❓ Ticket #${m[1]} not found.`;
     return handleClose(ticket, userId, true);
+  }
+
+  // ticket #<number> or status #<number> — show ticket status
+  m = lower.match(/^(?:ticket|status)\s+#?(\d+)$/);
+  if (m) {
+    const num = parseInt(m[1]);
+    const ticket = getTicket(num) ?? await recoverTicketFromGitHub(num, userId);
+    if (!ticket) return `❓ Ticket #${num} not found on GitHub either.`;
+    const stageEmoji: Record<string, string> = { backlog: "📋", in_dev: "👨‍💻", in_review: "🔍", in_testing: "🧪", done: "✅", blocked: "🚫" };
+    return (
+      `${stageEmoji[ticket.stage] ?? "📋"} *Ticket #${ticket.issueNumber}: ${ticket.title}*\n` +
+      `Stage: *${ticket.stage.replace("_", " ").toUpperCase()}*\n` +
+      `${ticket.prUrl ? `PR: ${ticket.prUrl}\n` : ""}` +
+      `\nWhat would you like to do?\n` +
+      `• \`review ${num}\` — AI reviews the PR\n` +
+      `• \`deploy ${num}\` — deploy to staging\n` +
+      `• \`close ${num}\` — mark as done`
+    );
   }
 
   // comment on #<number>: <text>  — post a user comment on the GitHub issue
@@ -488,6 +511,32 @@ async function handleWorkflowCommand(lower: string, text: string, userId: string
 }
 
 /** Find the most recent non-done ticket for a user */
+/**
+ * If a ticket isn't in the store (e.g. lost after Railway restart),
+ * fetch it from GitHub and re-create a stub so commands like "review N" work.
+ */
+async function recoverTicketFromGitHub(issueNumber: number, userId: string) {
+  const owner = process.env.GITHUB_OWNER;
+  const repo  = process.env.GITHUB_REPO;
+  const token = process.env.GITHUB_TOKEN;
+  if (!owner || !repo || !token) return null;
+  try {
+    const resp = await fetch(
+      `https://api.github.com/repos/${owner}/${repo}/issues/${issueNumber}`,
+      { headers: { Authorization: `token ${token}`, Accept: "application/vnd.github+json" } }
+    );
+    if (!resp.ok) return null;
+    const issue = await resp.json() as { number: number; title: string; html_url: string; state: string };
+    const ticket = createWorkflowTicket(issue.number, issue.title, userId, issue.html_url);
+    ticket.stage = "in_review"; // assume it's at least been developed
+    saveTicket(ticket);
+    console.log(`[store] Recovered ticket #${issueNumber} from GitHub`);
+    return ticket;
+  } catch {
+    return null;
+  }
+}
+
 async function findRecentTicket(userId: string): Promise<number | null> {
   try {
     const { getTicketsByAssignee, getAllTickets } = await import("./workflow/store.js");
