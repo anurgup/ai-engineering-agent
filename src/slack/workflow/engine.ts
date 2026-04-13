@@ -108,18 +108,19 @@ export async function handleAIDevelop(
       // Reload ticket after agent finishes
       const updated = getTicket(ticket.issueNumber)!;
       await transitionStage(ticket.issueNumber, "in_review", "ai", "AI finished coding");
-      await notifyChannel(
-        STATUS_CHANNEL,
+      const msg =
         `✅ *AI finished coding for #${ticket.issueNumber}: ${ticket.title}*\n` +
-        `PR is ready for review.\n\n` +
-        `Reply \`deploy ${ticket.issueNumber}\` to deploy to staging, or \`review ${ticket.issueNumber}\` for AI code review.`
-      );
+        `${updated?.prUrl ? `🔀 PR: ${updated.prUrl}\n` : ""}` +
+        `\nReply \`review ${ticket.issueNumber}\` for AI code review, or \`deploy ${ticket.issueNumber}\` to deploy to staging.`;
+      // DM the user who triggered it + post to channel if configured
+      await notifyUser(userId, msg);
+      if (process.env.SLACK_STATUS_CHANNEL && process.env.SLACK_STATUS_CHANNEL !== "general") {
+        await notifyChannel(process.env.SLACK_STATUS_CHANNEL, msg);
+      }
     })
     .catch(async (err: unknown) => {
-      await notifyChannel(
-        STATUS_CHANNEL,
-        `❌ *AI coding failed for #${ticket.issueNumber}*: ${err instanceof Error ? err.message : String(err)}`
-      );
+      const errMsg = `❌ *AI coding failed for #${ticket.issueNumber}*: ${err instanceof Error ? err.message : String(err)}`;
+      await notifyUser(userId, errMsg);
     });
 
   return (
