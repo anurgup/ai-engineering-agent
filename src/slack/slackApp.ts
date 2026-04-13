@@ -248,18 +248,18 @@ async function routeMessage(session: ConversationSession, rawInput: string, user
     return answerDevQuestion(userId, text);
   }
 
-  // Bare "done" outside dev session — find the most recent ticket and confirm
+  // Bare "done" — means "I finished coding", move to review (not close)
   if (lower === "done") {
     const num = await findRecentTicket(userId);
     if (num) {
       const { getTicket } = await import("./workflow/store.js");
       const ticket = getTicket(num) ?? await recoverTicketFromGitHub(num, userId);
       if (ticket) {
-        const { handleClose } = await import("./workflow/engine.js");
-        return handleClose(ticket, userId);
+        const { handleDevDone } = await import("./workflow/engine.js");
+        return handleDevDone(ticket, userId);
       }
     }
-    return `❓ Type \`done <number>\` to close a ticket, e.g. \`done 14\``;
+    return `❓ Type \`done <number>\` to mark development complete, e.g. \`done 14\``;
   }
 
   // ── Pipeline status ────────────────────────────────────────────────────────

@@ -96,10 +96,10 @@ export async function answerDevQuestion(userId: string, question: string): Promi
     endDevSession(userId);
     return (
       `✅ *Dev session closed for #${session.issueNumber}*\n\n` +
-      `Handing back to workflow. What's next?\n` +
-      `• \`review ${session.issueNumber}\` — AI reviews the PR\n` +
-      `• \`merge ${session.issueNumber}\` — merge and deploy\n` +
-      `• \`close ${session.issueNumber}\` — mark as done`
+      `Development complete! Next steps:\n` +
+      `• \`review ${session.issueNumber}\` — AI reviews your PR\n` +
+      `• \`merge ${session.issueNumber}\` — merge and trigger deploy\n` +
+      `• \`done ${session.issueNumber}\` — mark dev done and move to review stage`
     );
   }
 
