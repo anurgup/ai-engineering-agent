@@ -171,7 +171,7 @@ function persistTicketToMongo(ticket: WorkflowTicket): void {
       TM.findOneAndUpdate(
         { issueNumber: ticket.issueNumber },
         ticket as unknown as object,
-        { upsert: true, new: true }
+        { upsert: true, returnDocument: "after" }
       )
     )
     .catch((err) => console.warn("[store] MongoDB ticket upsert failed:", err));
@@ -184,7 +184,7 @@ function persistUserToMongo(user: SlackUser): void {
       UM.findOneAndUpdate(
         { id: user.id },
         user as unknown as object,
-        { upsert: true, new: true }
+        { upsert: true, returnDocument: "after" }
       )
     )
     .catch((err) => console.warn("[store] MongoDB user upsert failed:", err));

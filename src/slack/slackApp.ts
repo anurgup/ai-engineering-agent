@@ -193,7 +193,7 @@ function registerHandlers(app: App): void {
   });
 
   // Direct message
-  app.message(async ({ message, say }) => {
+  app.message(async ({ message, say, client }) => {
     // Filter to only user messages (not bot messages)
     if (message.subtype !== undefined) return;
 
@@ -206,13 +206,22 @@ function registerHandlers(app: App): void {
 
     console.log(`[slack] DM from ${userId}: "${rawText.slice(0, 80)}"`);
 
-    // Show typing indicator while processing
-    await say({ text: "_Thinking..._" });
+    // Helper: post directly to the channel we already know — avoids conversations.open
+    const post = async (text: string) => {
+      try {
+        await client.chat.postMessage({ channel, text });
+      } catch (err) {
+        console.error(`[slack] Failed to post response:`, (err as Error).message ?? err);
+      }
+    };
+
+    // Show typing indicator (fire-and-forget — don't block if Slack API is down)
+    post("_Thinking..._").catch(() => {});
 
     const session = getOrCreateSession(userId, channel);
     const reply   = await routeMessage(session, rawText, userId);
 
-    await say({ text: slackFormat(reply) });
+    await post(slackFormat(reply));
   });
 }
 
