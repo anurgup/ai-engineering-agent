@@ -11,7 +11,7 @@
  *   4. Asks the next decision question
  */
 
-import type { WorkflowTicket, TicketStage, AssigneeRole } from "./types.js";
+import type { WorkflowTicket, TicketStage, AssigneeRole, SlackUser } from "./types.js";
 import { getTicket, saveTicket, findUserByName, registerUser, getUser } from "./store.js";
 import { notifyUser, notifyChannel, lookupSlackUser } from "../notifier.js";
 import { generateTestCases, generateTestSuite, executeTestSuite, formatTestResults, formatTestSuitePreview } from "../testGenerator.js";
