@@ -78,6 +78,14 @@ function isWriteToFileRequest(question: string): boolean {
     /\bcommit (it|this|the (test|file|code))\b/i.test(question);
 }
 
+// ── Conversational / continuation detection ───────────────────────────────────
+// Short messages like "yes", "do it", "status?" don't need RAG or Sonnet
+
+function isConversational(question: string): boolean {
+  const words = question.trim().split(/\s+/).length;
+  return words <= 5 && !isWriteToFileRequest(question);
+}
+
 // ── Done / handoff detection ──────────────────────────────────────────────────
 
 const DONE_RE =
@@ -122,19 +130,10 @@ export async function answerDevQuestion(userId: string, question: string): Promi
   session.updatedAt = new Date();
   session.turns.push({ role: "user", content: question });
 
-  // Compress history early — at 4 turns (not 8) to keep context window lean
+  // Compress history early — at 4 turns to keep context window lean
   if (session.turns.length > 4) {
     session.summary = await summarizeTurns(session.summary, session.turns.splice(0, 4));
   }
-
-  // RAG context — re-fetch only every 4 turns; reuse cache in between
-  const turnIndex = session.turns.length;
-  if (!session.cachedContext || (turnIndex - session.contextTurn) >= 4) {
-    session.cachedContext = await buildRAGContext(question, session);
-    session.contextTurn   = turnIndex;
-    console.log(`[devAssistant] RAG refreshed at turn ${turnIndex}`);
-  }
-  const context = session.cachedContext;
 
   const historyText = session.summary ? `[Earlier] ${session.summary}\n\n` : "";
   const recentTurns = session.turns
@@ -144,37 +143,55 @@ export async function answerDevQuestion(userId: string, question: string): Promi
 
   // ── Write-to-file mode ────────────────────────────────────────────────────
   if (isWriteToFileRequest(question)) {
-    return generateAndSaveFile(question, session, context, historyText + recentTurns);
+    // Ensure RAG is loaded for file generation
+    if (!session.cachedContext) {
+      session.cachedContext = await buildRAGContext(question, session);
+      session.contextTurn   = session.turns.length;
+    }
+    return generateAndSaveFile(question, session, session.cachedContext, historyText + recentTurns);
   }
 
-  // ── Normal Q&A mode ───────────────────────────────────────────────────────
+  // ── Tier 1: Conversational / short message — Haiku, no RAG ───────────────
+  // "yes", "do it", "status?", "yes please" — these continue existing context
+  if (isConversational(question)) {
+    const sysShort = `Senior engineer pair-programming. Ticket #${session.issueNumber}: ${session.issueTitle}. Be concise. Never ask for files. When done, say "type done ${session.issueNumber}".`;
+    const userShort = [historyText + recentTurns, `Dev: ${question}`].filter(Boolean).join("\n");
+    console.log(`[devAssistant] Haiku (conversational) for #${session.issueNumber} (~${Math.ceil(userShort.length / 4)} tokens)`);
+    const msg = await client.messages.create({
+      model:      "claude-haiku-4-5-20251001",
+      max_tokens: 250,
+      system:     sysShort,
+      messages:   [{ role: "user", content: userShort }],
+    });
+    const block  = msg.content[0];
+    const answer = block.type === "text" ? block.text : "Sorry, couldn't respond.";
+    const stored = answer.length > 150 ? answer.slice(0, 150) + "…" : answer;
+    session.turns.push({ role: "assistant", content: stored });
+    devSessions.set(userId, session);
+    return answer;
+  }
+
+  // ── Tier 2: Real code question — Sonnet + cached RAG ─────────────────────
+  const turnIndex = session.turns.length;
+  if (!session.cachedContext || (turnIndex - session.contextTurn) >= 4) {
+    session.cachedContext = await buildRAGContext(question, session);
+    session.contextTurn   = turnIndex;
+    console.log(`[devAssistant] RAG refreshed at turn ${turnIndex}`);
+  }
+  const context = session.cachedContext;
+
   const systemPrompt =
-    `You are a senior software engineer pair-programming with a developer.
-The FULL codebase context is provided above — repo files, signatures, and previews are ALL already loaded.
-
-CRITICAL RULES (never violate):
-- NEVER ask the developer for file paths, file contents, or code snippets — you already have them in the context above
-- NEVER say "please share the file" or "can you paste the code" — use what is provided
-- If you need to reference a file, use what is in the "Your Codebase" section above
-- Answer directly using the context provided
-
-STYLE RULES:
-- Be concise and practical. Match existing conventions.
-- If asked to write code, show it in a code block.
-- Do NOT ask open-ended "what's next?" or suggest other tickets/features
-- When the task is complete, say so briefly and tell the developer to type "done ${session.issueNumber}" to close the session
-- Stay focused on the current ticket only
-
-Current ticket: #${session.issueNumber} — ${session.issueTitle}
-Turn ${session.turns.length + 1} of ${MAX_TURNS}`;
+    `Senior engineer pair-programming. Codebase context is provided — NEVER ask for file paths or code.
+Answer directly from context. Code in code blocks. Stay on ticket #${session.issueNumber}: ${session.issueTitle}.
+When done, tell dev to type "done ${session.issueNumber}".`;
 
   const userContent = [
-    context ? `${context}\n\n---` : "",
+    context ? `${context}\n---` : "",
     historyText + recentTurns,
-    `Developer: ${question}`,
+    `Dev: ${question}`,
   ].filter(Boolean).join("\n");
 
-  console.log(`[devAssistant] Answering for #${session.issueNumber} (~${Math.ceil(userContent.length / 4)} tokens)`);
+  console.log(`[devAssistant] Sonnet (code) for #${session.issueNumber} (~${Math.ceil(userContent.length / 4)} tokens)`);
 
   const msg = await client.messages.create({
     model:      "claude-sonnet-4-6",
@@ -187,7 +204,7 @@ Turn ${session.turns.length + 1} of ${MAX_TURNS}`;
   const answer = block.type === "text" ? block.text : "Sorry, I couldn't generate a response.";
 
   // Store a truncated version in history to prevent snowball growth
-  const storedAnswer = answer.length > 250 ? answer.slice(0, 250) + "…" : answer;
+  const storedAnswer = answer.length > 150 ? answer.slice(0, 150) + "…" : answer;
   session.turns.push({ role: "assistant", content: storedAnswer });
   devSessions.set(userId, session);
 
