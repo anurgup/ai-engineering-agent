@@ -33,8 +33,9 @@ interface DevSession {
   issueTitle:     string;
   turns:          { role: "user" | "assistant"; content: string }[];
   summary:        string;
-  cachedContext:  string;   // RAG context — reused for 4 turns to avoid re-fetching
-  contextTurn:    number;   // turn index when context was last fetched
+  cachedContext:  string;     // RAG context — reused for 4 turns to avoid re-fetching
+  contextTurn:    number;     // turn index when context was last fetched
+  lastFullAnswer: string;     // full (untruncated) last assistant answer for continuations
   createdAt:      Date;
   updatedAt:      Date;
 }
@@ -50,6 +51,7 @@ export function startDevSession(userId: string, issueNumber: number, issueTitle:
     summary:        "",
     cachedContext:  "",
     contextTurn:    -99,
+    lastFullAnswer: "",
     createdAt:      new Date(),
     updatedAt:      new Date(),
   });
@@ -152,10 +154,14 @@ export async function answerDevQuestion(userId: string, question: string): Promi
   }
 
   // ── Tier 1: Conversational / short message — Haiku, no RAG ───────────────
-  // "yes", "do it", "status?", "yes please" — these continue existing context
+  // "yes", "do it", "status?", "yes please" — these continue existing context.
+  // Inject the last full assistant answer so Haiku knows exactly what was proposed.
   if (isConversational(question)) {
+    const lastCtx = session.lastFullAnswer
+      ? `Bot (last response): ${session.lastFullAnswer}\n\n`
+      : "";
     const sysShort = `Senior engineer pair-programming. Ticket #${session.issueNumber}: ${session.issueTitle}. Be concise. Never ask for files. When done, say "type done ${session.issueNumber}".`;
-    const userShort = [historyText + recentTurns, `Dev: ${question}`].filter(Boolean).join("\n");
+    const userShort = [historyText, lastCtx + recentTurns, `Dev: ${question}`].filter(Boolean).join("\n");
     console.log(`[devAssistant] Haiku (conversational) for #${session.issueNumber} (~${Math.ceil(userShort.length / 4)} tokens)`);
     const msg = await client.messages.create({
       model:      "claude-haiku-4-5-20251001",
@@ -165,8 +171,8 @@ export async function answerDevQuestion(userId: string, question: string): Promi
     });
     const block  = msg.content[0];
     const answer = block.type === "text" ? block.text : "Sorry, couldn't respond.";
-    const stored = answer.length > 150 ? answer.slice(0, 150) + "…" : answer;
-    session.turns.push({ role: "assistant", content: stored });
+    session.lastFullAnswer = answer;
+    session.turns.push({ role: "assistant", content: answer.length > 150 ? answer.slice(0, 150) + "…" : answer });
     devSessions.set(userId, session);
     return answer;
   }
@@ -203,9 +209,9 @@ When done, tell dev to type "done ${session.issueNumber}".`;
   const block  = msg.content[0];
   const answer = block.type === "text" ? block.text : "Sorry, I couldn't generate a response.";
 
-  // Store a truncated version in history to prevent snowball growth
-  const storedAnswer = answer.length > 150 ? answer.slice(0, 150) + "…" : answer;
-  session.turns.push({ role: "assistant", content: storedAnswer });
+  // Store truncated version in history; keep full answer for next conversational turn
+  session.lastFullAnswer = answer;
+  session.turns.push({ role: "assistant", content: answer.length > 150 ? answer.slice(0, 150) + "…" : answer });
   devSessions.set(userId, session);
 
   return answer;
