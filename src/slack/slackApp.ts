@@ -227,7 +227,9 @@ function registerHandlers(app: App): void {
 
 // ── Routing — SDLC workflow commands + ticket creation ────────────────────────
 
-async function routeMessage(session: ConversationSession, text: string, userId: string): Promise<string> {
+async function routeMessage(session: ConversationSession, rawInput: string, userId: string): Promise<string> {
+  // Strip Slack code formatting (backticks) and leading/trailing whitespace
+  const text  = rawInput.replace(/^`+|`+$/g, "").trim();
   const lower = text.toLowerCase().trim();
 
   // ── Global commands ────────────────────────────────────────────────────────
