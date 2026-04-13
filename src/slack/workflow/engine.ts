@@ -295,7 +295,110 @@ export async function handleAIReview(
 }
 
 /**
- * Merge the PR on GitHub
+ * Poll GitHub Actions until the CI run triggered after a merge completes,
+ * then poll the Render health endpoint until the service responds 200.
+ * DMs the user when ready to test (or on timeout/failure).
+ */
+async function waitForDeployAndNotify(
+  ticket: WorkflowTicket,
+  userId: string,
+  mergedAt: Date
+): Promise<void> {
+  const owner       = process.env.GITHUB_OWNER!;
+  const repo        = process.env.GITHUB_REPO!;
+  const token       = process.env.GITHUB_TOKEN!;
+  const serviceUrl  = process.env.SERVICE_BASE_URL ?? "";
+  const ghHeaders   = { Authorization: `token ${token}`, Accept: "application/vnd.github+json" };
+
+  const POLL_INTERVAL_MS = 20_000;   // 20s between checks
+  const CI_TIMEOUT_MS    = 10 * 60_000; // 10 min max for CI
+  const RENDER_TIMEOUT_MS = 5 * 60_000; // 5 min max for Render to come up
+  const start = Date.now();
+
+  // ── Step 1: Wait for CI/CD to complete ──────────────────────────────────────
+  console.log(`[deploy-watch] Waiting for CI run after merge of ticket #${ticket.issueNumber}...`);
+  let ciPassed = false;
+
+  while (Date.now() - start < CI_TIMEOUT_MS) {
+    await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
+
+    try {
+      const r = await fetch(
+        `https://api.github.com/repos/${owner}/${repo}/actions/runs?branch=main&event=push&per_page=5`,
+        { headers: ghHeaders }
+      );
+      if (!r.ok) continue;
+
+      const data = await r.json() as { workflow_runs: Array<{ id: number; name: string; status: string; conclusion: string | null; created_at: string }> };
+      const run  = data.workflow_runs.find(
+        (w) => w.name.toLowerCase().includes("ci") && new Date(w.created_at) >= mergedAt
+      );
+
+      if (!run) continue;
+
+      if (run.status === "completed") {
+        if (run.conclusion === "success") {
+          ciPassed = true;
+          console.log(`[deploy-watch] CI passed for ticket #${ticket.issueNumber}`);
+        } else {
+          await notifyUser(userId,
+            `❌ *CI/CD failed for #${ticket.issueNumber}*\n` +
+            `The build failed after merging. Check GitHub Actions for details.\n` +
+            `https://github.com/${owner}/${repo}/actions`
+          );
+          return;
+        }
+        break;
+      }
+    } catch { /* transient — retry */ }
+  }
+
+  if (!ciPassed) {
+    await notifyUser(userId, `⏱ *CI/CD is taking longer than expected for #${ticket.issueNumber}*\nCheck GitHub Actions manually: https://github.com/${owner}/${repo}/actions`);
+    return;
+  }
+
+  // ── Step 2: Wait for Render service to become healthy ─────────────────────
+  if (!serviceUrl) {
+    await notifyUser(userId,
+      `✅ *CI/CD passed for #${ticket.issueNumber}!*\n` +
+      `Render deploy triggered. Once it's live:\n` +
+      `• \`i want to test ${ticket.issueNumber}\` — generate test plan\n` +
+      `• \`ai test ${ticket.issueNumber}\` — AI runs tests automatically`
+    );
+    return;
+  }
+
+  console.log(`[deploy-watch] CI passed — waiting for Render to come up at ${serviceUrl}...`);
+  const renderStart = Date.now();
+
+  while (Date.now() - renderStart < RENDER_TIMEOUT_MS) {
+    await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
+    try {
+      const health = await fetch(`${serviceUrl}/api/employee`, { signal: AbortSignal.timeout(8000) });
+      if (health.ok) {
+        console.log(`[deploy-watch] Render is up for ticket #${ticket.issueNumber}`);
+        await notifyUser(userId,
+          `🚀 *#${ticket.issueNumber} is deployed and live!*\n` +
+          `*${ticket.title}*\n\n` +
+          `What would you like to do?\n` +
+          `• \`i want to test ${ticket.issueNumber}\` — AI generates test plan with curl commands\n` +
+          `• \`ai test ${ticket.issueNumber}\` — AI generates and runs all tests automatically`
+        );
+        return;
+      }
+    } catch { /* not up yet */ }
+  }
+
+  await notifyUser(userId,
+    `⏱ *Render deploy timed out for #${ticket.issueNumber}*\n` +
+    `The service may still be starting. Try testing manually:\n` +
+    `• \`i want to test ${ticket.issueNumber}\``
+  );
+}
+
+/**
+ * Merge the PR on GitHub, then wait in background for deploy before prompting to test.
  */
 export async function handleMergePR(
   ticket: WorkflowTicket,
@@ -333,16 +436,20 @@ export async function handleMergePR(
     if (resp.status === 200) {
       ticket.stage = "in_testing";
       saveTicket(ticket);
+
+      const mergedAt = new Date();
+      // Watch CI + Render in the background — notify user when ready
+      waitForDeployAndNotify(ticket, userId, mergedAt).catch((err) =>
+        console.error(`[deploy-watch] Error:`, err)
+      );
+
       return (
         `✅ *PR #${ticket.prNumber} merged!*\n` +
-        `CI/CD will now build and deploy to Render.\n\n` +
-        `Once deployed:\n` +
-        `• \`i want to test ${ticket.issueNumber}\` — generate test cases\n` +
-        `• \`ai test ${ticket.issueNumber}\` — AI runs tests automatically\n` +
-        `• \`close ${ticket.issueNumber}\` — mark ticket as done`
+        `⏳ Waiting for CI/CD to build and Render to deploy...\n\n` +
+        `I'll send you a DM as soon as it's live and ready to test. Sit tight!`
       );
     } else if (resp.status === 405) {
-      return `❌ PR #${ticket.prNumber} is not mergeable yet (conflicts or checks failing). Fix issues first.`;
+      return `❌ PR #${ticket.prNumber} is not mergeable yet (conflicts or checks failing).`;
     } else if (resp.status === 409) {
       return `❌ PR #${ticket.prNumber} has merge conflicts. Use \`fix pr ${ticket.issueNumber}\` to resolve them.`;
     } else {
