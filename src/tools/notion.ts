@@ -289,6 +289,35 @@ export class NotionClient {
     return pages;
   }
 
+  /**
+   * Find existing page by title, update it if found, create new one if not.
+   */
+  async upsertPage(title: string, markdownContent: string): Promise<{ id: string; url: string; created: boolean }> {
+    // Search for existing page with this exact title
+    const existing = await this.searchPages(title);
+    const match = existing.find((p) => p.title === title);
+
+    if (match) {
+      console.log(`[notion] Found existing page "${title}" — updating...`);
+      // Delete all existing blocks then re-append
+      const childrenResp = await this.client.blocks.children.list({ block_id: match.id, page_size: 100 });
+      for (const block of childrenResp.results) {
+        await this.client.blocks.delete({ block_id: (block as { id: string }).id }).catch(() => {});
+      }
+      const blocks = markdownToNotionBlocks(markdownContent);
+      const batches = [];
+      for (let i = 0; i < blocks.length; i += 100) batches.push(blocks.slice(i, i + 100));
+      for (const batch of batches) {
+        // @ts-expect-error Notion SDK type mismatch
+        await this.client.blocks.children.append({ block_id: match.id, children: batch });
+      }
+      return { id: match.id, url: match.url, created: false };
+    }
+
+    const result = await this.createPage(title, markdownContent);
+    return { ...result, created: true };
+  }
+
   async createPage(title: string, markdownContent: string): Promise<{ id: string; url: string }> {
     const blocks = markdownToNotionBlocks(markdownContent);
 

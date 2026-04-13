@@ -31,15 +31,15 @@ export async function updateNotion(state: AgentState): Promise<Partial<AgentStat
 
   let notionDoc;
   try {
-    const created = await notion.createPage(pageTitle, markdownContent);
-    notionDoc = { id: created.id, url: created.url, title: pageTitle };
-    console.log(`[updateNotion] ✓ Page created: ${notionDoc.url}`);
+    const result = await notion.upsertPage(pageTitle, markdownContent);
+    notionDoc = { id: result.id, url: result.url, title: pageTitle };
+    console.log(`[updateNotion] ✓ Page ${result.created ? "created" : "updated"}: ${notionDoc.url}`);
 
     // ── Instantly add this page to the RAG index so future tickets find it ──
     await addPageToIndex({
-      id:      created.id,
+      id:      result.id,
       title:   pageTitle,
-      url:     created.url,
+      url:     result.url,
       excerpt: markdownContent.slice(0, 1500),
     });
   } catch (err) {

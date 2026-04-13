@@ -5,58 +5,47 @@ export function buildNotionDocPrompt(
   generatedCode: GeneratedCode,
   pullRequest: PullRequest
 ): string {
-  const fileList = generatedCode.files
-    .map((f) => `- ${f.path}`)
-    .join("\n");
+  const fileList = generatedCode.files.map((f) => `- \`${f.path}\``).join("\n");
+  const deps = generatedCode.dependencies.length > 0
+    ? generatedCode.dependencies.join(", ")
+    : "None";
 
-  const deps =
-    generatedCode.dependencies.length > 0
-      ? generatedCode.dependencies.join(", ")
-      : "None";
+  return `You are a technical writer updating Notion documentation for a feature.
+Be concise — every section should be 2-4 lines max. No fluff.
 
-  return `You are a technical writer creating Notion documentation for a newly implemented feature.
+## Input
+- Issue: #${ticket.number} — ${ticket.title}
+- PR: ${pullRequest.url}
+- Summary: ${generatedCode.summary}
+- Files changed:\n${fileList}
+- Dependencies: ${deps}
+- Test instructions: ${generatedCode.testInstructions}
 
-## Feature Details
-GitHub Issue: #${ticket.number} — ${ticket.title}
-Issue URL: ${ticket.url}
-Pull Request: ${pullRequest.url}
+## Output Format (Markdown only, no code fences wrapping the whole response)
 
-## Implementation Summary
-${generatedCode.summary}
+# #${ticket.number}: ${ticket.title}
 
-## Files
+> 📌 **Status:** In Review &nbsp;|&nbsp; 🔗 [GitHub Issue](${ticket.url}) &nbsp;|&nbsp; 🔀 [Pull Request](${pullRequest.url})
+
+---
+
+## 🎯 What & Why
+[One sentence: what the feature does and why it was needed]
+
+## 📁 Files Changed
 ${fileList}
 
-## Dependencies Added
+## ⚙️ How It Works
+[2-3 bullet points on the key implementation details — classes, methods, flow]
+
+## 🧪 How to Test
+[Numbered steps — be specific with curl commands or UI steps]
+
+## 📦 Dependencies
 ${deps}
 
-## Test Instructions
-${generatedCode.testInstructions}
+---
+_Last updated by AI agent_
 
-Generate a Notion page in Markdown format. The page must be structured so that:
-1. A human developer can understand the feature quickly
-2. A future AI agent can retrieve this page via semantic search and understand the architecture
-
-Use this exact structure (Markdown only, no HTML):
-
-## Overview
-[What this feature does and why it was built]
-
-## Implementation
-[Key files, classes, functions, and how they interact]
-
-## Architecture Decisions
-[Any non-obvious design choices and the reasoning]
-
-## Dependencies
-[New packages and why they were chosen]
-
-## Testing
-[How to verify the feature works]
-
-## Links
-- GitHub Issue: ${ticket.url}
-- Pull Request: ${pullRequest.url}
-
-Return ONLY the Markdown content — no preamble, no code fences wrapping the whole response.`;
+Return ONLY the Markdown — no preamble.`;
 }
