@@ -104,9 +104,14 @@ export async function handleAIDevelop(
   const graph = buildGraph();
   graph
     .invoke({ ticketKey: String(ticket.issueNumber), autoApprove: true })
-    .then(async () => {
-      // Reload ticket after agent finishes — PR URL is now set
+    .then(async (result) => {
+      // Persist PR info returned by pushToGitHub node into the workflow ticket
       const updated = getTicket(ticket.issueNumber) ?? ticket;
+      if (result?.pullRequest) {
+        updated.prNumber = result.pullRequest.number;
+        updated.prUrl    = result.pullRequest.url;
+        saveTicket(updated);
+      }
       await transitionStage(ticket.issueNumber, "in_review", "ai", "AI finished coding");
 
       const msg = [
