@@ -250,11 +250,15 @@ export async function handleAIReview(
           { headers: { Authorization: `token ${token}`, Accept: "application/vnd.github+json" } }
         );
         if (resp.ok) {
-          const prs = await resp.json() as Array<{ number: number; title: string; html_url: string }>;
+          const prs = await resp.json() as Array<{ number: number; title: string; html_url: string; head: { ref: string } }>;
           const num = ticket.issueNumber;
           const pr  = prs.find((p) =>
+            // branch name always has the issue number (most reliable)
+            p.head.ref.includes(`/${num}-`) ||
+            p.head.ref.includes(`/${num}/`) ||
+            p.head.ref === `feature/${num}` ||
+            // title fallbacks
             p.title.includes(`#${num}`) ||
-            p.title.includes(`(${num})`) ||
             p.title.includes(`(#${num})`) ||
             p.title.toLowerCase().includes(ticket.title.toLowerCase().slice(0, 30))
           );
@@ -262,6 +266,9 @@ export async function handleAIReview(
             ticket.prNumber = pr.number;
             ticket.prUrl    = pr.html_url;
             saveTicket(ticket);
+            console.log(`[review] Found PR #${pr.number} for ticket #${num} via branch "${pr.head.ref}"`);
+          } else {
+            console.warn(`[review] No PR found for ticket #${num}. PRs checked: ${prs.map(p => `#${p.number}(${p.head.ref})`).join(", ")}`);
           }
         }
       }
