@@ -146,22 +146,37 @@ export async function handleAssign(
   assignedBy:  string,
   role:        AssigneeRole = "developer"
 ): Promise<string> {
-  // Try to find user in registry first
-  let user = findUserByName(assigneeName);
+  let user: SlackUser | undefined;
 
-  // If not found, try Slack API lookup
-  if (!user) {
-    const slackUser = await lookupSlackUser(assigneeName);
-    if (slackUser) {
-      registerUser({ ...slackUser, role });
-      user = slackUser;
+  // "me" / "myself" — assign to the person who sent the command
+  if (/^me$|^myself$/i.test(assigneeName.trim())) {
+    user = getUser(assignedBy);
+    if (!user) {
+      // Self-register with just the Slack user ID (no name lookup needed)
+      user = { id: assignedBy, name: assignedBy, realName: assignedBy, role };
+      registerUser(user);
+    }
+  } else {
+    // Try to find user in registry first
+    user = findUserByName(assigneeName);
+
+    // If not found, try Slack API lookup
+    if (!user) {
+      const slackUser = await lookupSlackUser(assigneeName);
+      if (slackUser) {
+        registerUser({ ...slackUser, role });
+        user = slackUser;
+      }
     }
   }
 
   if (!user) {
     return (
-      `❓ I couldn't find *${assigneeName}* in Slack.\n` +
-      `Make sure they're in this workspace. Try their exact display name.`
+      `❓ I couldn't find *${assigneeName}* in Slack.\n\n` +
+      `Try one of these:\n` +
+      `• \`assign tester me ${ticket.issueNumber}\` — assign yourself\n` +
+      `• Use their exact Slack display name (e.g. \`john.doe\`)\n\n` +
+      `_Tip: the bot needs \`users:read\` scope to search by name. Add it at api.slack.com → OAuth & Permissions._`
     );
   }
 
@@ -569,7 +584,7 @@ export async function handleAITest(
       notionLine +
       `What's next?\n` +
       `• \`close ${ticket.issueNumber}\` — all good, mark as done\n` +
-      `• \`assign tester <name> ${ticket.issueNumber}\` — hand off to a human tester\n` +
+      `• \`assign tester me ${ticket.issueNumber}\` — assign yourself as tester\n` +
       `• \`fix pr ${ticket.issueNumber}\` — AI fixes failures and reruns`
     );
   } catch (err) {
@@ -601,7 +616,7 @@ export async function handleUserTest(
       preview + `\n\n` +
       `Run the curls above, then:\n` +
       `• \`run tests ${ticket.issueNumber}\` — AI executes them and reports pass/fail\n` +
-      `• \`assign tester <name> ${ticket.issueNumber}\` — hand off to a human tester\n` +
+      `• \`assign tester me ${ticket.issueNumber}\` — assign yourself as tester\n` +
       `• \`close ${ticket.issueNumber}\` — all good, mark as done`
     );
   } catch (err) {
@@ -634,7 +649,7 @@ export async function handleRunTests(
       notionLine +
       `What's next?\n` +
       `• \`close ${ticket.issueNumber}\` — all good, mark as done\n` +
-      `• \`assign tester <name> ${ticket.issueNumber}\` — hand off to a human tester\n` +
+      `• \`assign tester me ${ticket.issueNumber}\` — assign yourself as tester\n` +
       `• \`fix pr ${ticket.issueNumber}\` — AI fixes failures and reruns`
     );
   } catch (err) {
