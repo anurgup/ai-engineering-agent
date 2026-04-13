@@ -74,11 +74,46 @@ function isWriteToFileRequest(question: string): boolean {
     /\bcommit (it|this|the (test|file|code))\b/i.test(question);
 }
 
+// ── Done / handoff detection ──────────────────────────────────────────────────
+
+const DONE_RE =
+  /\b(done|finished|complete[d]?|deployed|it[''']?s\s+(done|ready|working|live)|all\s+done|good\s+to\s+go|ready\s+for\s+review|pr\s+is\s+ready)\b/i;
+
+function isDoneSignal(text: string): boolean {
+  return DONE_RE.test(text);
+}
+
+const MAX_TURNS = 20; // auto-close after 20 turns to prevent token drain
+
 // ── Main Q&A handler ──────────────────────────────────────────────────────────
 
 export async function answerDevQuestion(userId: string, question: string): Promise<string> {
   const session = devSessions.get(userId);
   if (!session) return "No active dev session. Pick a ticket first.";
+
+  // ── Auto-close: done signal from user ────────────────────────────────────
+  if (isDoneSignal(question)) {
+    endDevSession(userId);
+    return (
+      `✅ *Dev session closed for #${session.issueNumber}*\n\n` +
+      `Handing back to workflow. What's next?\n` +
+      `• \`review ${session.issueNumber}\` — AI reviews the PR\n` +
+      `• \`merge ${session.issueNumber}\` — merge and deploy\n` +
+      `• \`close ${session.issueNumber}\` — mark as done`
+    );
+  }
+
+  // ── Auto-close: max turns reached to prevent token drain ─────────────────
+  if (session.turns.length >= MAX_TURNS) {
+    endDevSession(userId);
+    return (
+      `⏱ *Dev session auto-closed after ${MAX_TURNS} turns for #${session.issueNumber}*\n\n` +
+      `To continue: \`i'll do it ${session.issueNumber}\`\n` +
+      `Or hand off:\n` +
+      `• \`review ${session.issueNumber}\` — AI reviews the PR\n` +
+      `• \`merge ${session.issueNumber}\` — merge and deploy`
+    );
+  }
 
   session.updatedAt = new Date();
   session.turns.push({ role: "user", content: question });
@@ -106,11 +141,18 @@ export async function answerDevQuestion(userId: string, question: string): Promi
   const systemPrompt =
     `You are a senior software engineer pair-programming with a developer.
 You know their codebase AND their system architecture/domain knowledge deeply.
-Use both technical (code patterns) AND functional (business rules, cluster/service/market mapping) context.
+Use both technical (code patterns) AND functional (business rules) context.
 Be concise and practical. Match their existing conventions.
 If asked to write code, show it in a code block.
 
-Current ticket: #${session.issueNumber} — ${session.issueTitle}`;
+IMPORTANT RULES:
+- Do NOT ask open-ended "what's next?" or suggest other tickets/features
+- Do NOT offer to do more work once the current task is done
+- When the task is complete, say so briefly and tell the developer to type "done ${session.issueNumber}" to close the session
+- Stay focused on the current ticket only
+
+Current ticket: #${session.issueNumber} — ${session.issueTitle}
+Turn ${session.turns.length + 1} of ${MAX_TURNS}`;
 
   const userContent = [
     context ? `${context}\n\n---` : "",
