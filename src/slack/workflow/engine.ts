@@ -557,11 +557,16 @@ export async function handleAITest(
     ticket.testCases = formatTestSuitePreview(suite);
     saveTicket(ticket);
 
-    // Post results as a GitHub issue comment
-    await postTestComment(ticket, summary).catch(() => {});
+    // Post results as a GitHub issue comment + update Notion in parallel
+    const [notionUrl] = await Promise.all([
+      updateNotionWithTestResults(ticket, summary),
+      postTestComment(ticket, summary).catch(() => {}),
+    ]);
 
+    const notionLine = notionUrl ? `📝 Notion: ${notionUrl}\n` : "";
     return (
       summary + `\n\n` +
+      notionLine +
       `What's next?\n` +
       `• \`close ${ticket.issueNumber}\` — all good, mark as done\n` +
       `• \`assign tester <name> ${ticket.issueNumber}\` — hand off to a human tester\n` +
@@ -617,11 +622,16 @@ export async function handleRunTests(
     const results = await executeTestSuite(suite);
     const summary = formatTestResults(suite, results);
 
-    // Post results as a GitHub issue comment
-    await postTestComment(ticket, summary).catch(() => {});
+    // Post results as a GitHub issue comment + update Notion in parallel
+    const [notionUrl] = await Promise.all([
+      updateNotionWithTestResults(ticket, summary),
+      postTestComment(ticket, summary).catch(() => {}),
+    ]);
 
+    const notionLine = notionUrl ? `📝 Notion: ${notionUrl}\n` : "";
     return (
       summary + `\n\n` +
+      notionLine +
       `What's next?\n` +
       `• \`close ${ticket.issueNumber}\` — all good, mark as done\n` +
       `• \`assign tester <name> ${ticket.issueNumber}\` — hand off to a human tester\n` +
@@ -629,6 +639,39 @@ export async function handleRunTests(
     );
   } catch (err) {
     return `❌ Test run failed: ${err instanceof Error ? err.message : String(err)}`;
+  }
+}
+
+/** Update (or create) a Notion page for the ticket with test results, return the URL */
+async function updateNotionWithTestResults(ticket: WorkflowTicket, testContent: string): Promise<string | null> {
+  try {
+    const { NotionClient } = await import("../../tools/notion.js");
+    const notion    = new NotionClient();
+    const pageTitle = `Issue #${ticket.issueNumber}: ${ticket.title}`;
+
+    const markdown = [
+      `# ${pageTitle}`,
+      ``,
+      `> 📌 **Status:** In Testing &nbsp;|&nbsp; 🔗 [GitHub Issue](${ticket.githubUrl ?? ""}) &nbsp;|&nbsp; 🔀 [Pull Request](${ticket.prUrl ?? ""})`,
+      ``,
+      `---`,
+      ``,
+      `## 🧪 Test Results`,
+      ``,
+      testContent,
+      ``,
+      `---`,
+      `_Last updated by AI agent_`,
+    ].join("\n");
+
+    const result = await notion.upsertPage(pageTitle, markdown);
+    ticket.notionUrl = result.url;
+    saveTicket(ticket);
+    console.log(`[engine] Notion page ${result.created ? "created" : "updated"}: ${result.url}`);
+    return result.url;
+  } catch (err) {
+    console.warn(`[engine] Notion update failed (non-fatal):`, err);
+    return null;
   }
 }
 
