@@ -405,10 +405,13 @@ async function handleWorkflowCommand(lower: string, text: string, userId: string
     return handleAssign(ticket, m[1].trim(), userId);
   }
 
-  // i'll do it <number>
-  m = lower.match(/^i'?ll?\s+do\s+it\s+#?(\d+)$/);
+  // i'll do it <number> — also matches "i'll do it it 11", "ill do it 11", "i will do it 11"
+  m = lower.match(/^i'?l{1,2}\s+do\s+(?:it\s+)*#?(\d+)$/) ??
+      lower.match(/^i\s+will\s+do\s+(?:it\s+)*#?(\d+)$/) ??
+      lower.match(/^(?:i'?ll?|i\s+will)\s+(?:do\s+)?(?:it\s+)*#?(\d+)$/);
   if (m) {
-    const ticket = getTicket(parseInt(m[1]));
+    const num = parseInt(m[1]);
+    const ticket = getTicket(num) ?? await recoverTicketFromGitHub(num, userId);
     if (!ticket) return `❓ Ticket #${m[1]} not found.`;
     return handleHumanDevelop(ticket, userId);
   }
