@@ -445,24 +445,26 @@ async function handleWorkflowCommand(lower: string, text: string, userId: string
   // ai test <number>
   m = lower.match(/^ai\s+test\s+#?(\d+)$/);
   if (m) {
-    const ticket = getTicket(parseInt(m[1]));
+    const num = parseInt(m[1]);
+    const ticket = getTicket(num) ?? await recoverTicketFromGitHub(num, userId);
     if (!ticket) return `❓ Ticket #${m[1]} not found.`;
     return handleAITest(ticket, userId);
   }
 
-  // "i want to test <number>" — generate test plan with curls for manual testing
-  m = lower.match(/^i\s+want\s+to\s+test\s+#?(\d+)$/);
+  // "test <number>" / "i want to test <number>" / "manual test <number>" — generate test plan
+  m = lower.match(/^(?:i\s+want\s+to\s+test|test|manual\s+test)\s+#?(\d+)$/);
   if (m) {
-    const ticket = getTicket(parseInt(m[1]));
+    const num = parseInt(m[1]);
+    const ticket = getTicket(num) ?? await recoverTicketFromGitHub(num, userId);
     if (!ticket) return `❓ Ticket #${m[1]} not found.`;
     return handleUserTest(ticket, userId);
   }
 
-  // bare "i want to test" — use most recent ticket
-  if (lower === "i want to test" || lower === "test myself" || lower === "i'll test") {
+  // bare "test" / "i want to test" — use most recent ticket
+  if (lower === "test" || lower === "i want to test" || lower === "test myself" || lower === "i'll test") {
     const num = await findRecentTicket(userId);
-    if (!num) return `❓ No active ticket found. Please specify: \`i want to test #<number>\``;
-    const ticket = getTicket(num);
+    if (!num) return `❓ No active ticket found. Please specify: \`test #<number>\``;
+    const ticket = getTicket(num) ?? await recoverTicketFromGitHub(num, userId);
     if (!ticket) return `❓ Ticket #${num} not found.`;
     return handleUserTest(ticket, userId);
   }
