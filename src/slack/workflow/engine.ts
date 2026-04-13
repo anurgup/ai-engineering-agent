@@ -14,7 +14,7 @@
 import type { WorkflowTicket, TicketStage, AssigneeRole } from "./types.js";
 import { getTicket, saveTicket, findUserByName, registerUser, getUser } from "./store.js";
 import { notifyUser, notifyChannel, lookupSlackUser } from "../notifier.js";
-import { generateTestCases } from "../testGenerator.js";
+import { generateTestCases, generateTestSuite, executeTestSuite, formatTestResults, formatTestSuitePreview } from "../testGenerator.js";
 import { reviewPR } from "../prReviewer.js";
 import { buildGraph } from "../../agent/graph.js";
 import { startDevSession } from "../devAssistant.js";
@@ -270,10 +270,10 @@ export async function handleDeploy(
 
   return (
     `🚀 *#${ticket.issueNumber} deployed to staging!*\n\n` +
-    `Who should test it?\n` +
-    `• \`assign tester <name>\` — assign to a tester\n` +
-    `• \`ai test ${ticket.issueNumber}\` — AI generates + provides test cases\n` +
-    `• \`test myself ${ticket.issueNumber}\` — you'll test it`
+    `How would you like to test it?\n` +
+    `• \`i want to test ${ticket.issueNumber}\` — AI generates test cases + curl commands, you run them\n` +
+    `• \`ai test ${ticket.issueNumber}\` — AI generates AND executes all tests automatically\n` +
+    `• \`assign tester <name> ${ticket.issueNumber}\` — assign to a human tester`
   );
 }
 
@@ -288,18 +288,58 @@ export async function handleAITest(
   saveTicket(ticket);
 
   try {
-    const testCases = await generateTestCases(ticket.issueNumber, ticket.title);
-    ticket.testCases = testCases;
+    await notifyUser(userId, `🧪 Generating and executing tests for #${ticket.issueNumber}... this may take a minute.`);
+
+    const suite   = await generateTestSuite(ticket.issueNumber, ticket.title);
+    const results = await executeTestSuite(suite);
+    const summary = formatTestResults(suite, results);
+
+    ticket.testCases = formatTestSuitePreview(suite);
     saveTicket(ticket);
 
-    return (
-      `🧪 *AI Test Cases for #${ticket.issueNumber}: ${ticket.title}*\n\n` +
-      `${testCases}\n\n` +
-      `---\n` +
-      `Once all tests pass, type \`close ${ticket.issueNumber}\` to close the ticket.`
-    );
+    return summary;
   } catch (err) {
-    return `❌ Test generation failed: ${err instanceof Error ? err.message : String(err)}`;
+    return `❌ Test execution failed: ${err instanceof Error ? err.message : String(err)}`;
+  }
+}
+
+/**
+ * User wants to test manually — generate test plan with curls but don't execute
+ */
+export async function handleUserTest(
+  ticket: WorkflowTicket,
+  userId: string
+): Promise<string> {
+  ticket.testMode = "human";
+  saveTicket(ticket);
+
+  try {
+    const suite   = await generateTestSuite(ticket.issueNumber, ticket.title);
+    const preview = formatTestSuitePreview(suite);
+
+    ticket.testCases = preview;
+    saveTicket(ticket);
+
+    return preview;
+  } catch (err) {
+    return `❌ Test plan generation failed: ${err instanceof Error ? err.message : String(err)}`;
+  }
+}
+
+/**
+ * Run the saved test suite (after user reviewed the plan)
+ */
+export async function handleRunTests(
+  ticket: WorkflowTicket,
+  userId: string
+): Promise<string> {
+  try {
+    await notifyUser(userId, `⚡ Running tests for #${ticket.issueNumber}...`);
+    const suite   = await generateTestSuite(ticket.issueNumber, ticket.title);
+    const results = await executeTestSuite(suite);
+    return formatTestResults(suite, results);
+  } catch (err) {
+    return `❌ Test run failed: ${err instanceof Error ? err.message : String(err)}`;
   }
 }
 

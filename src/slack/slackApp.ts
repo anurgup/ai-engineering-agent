@@ -338,7 +338,7 @@ async function handleWorkflowCommand(lower: string, text: string, userId: string
   const {
     createWorkflowTicket, handleNewTicket, handleAIDevelop, handleAssign,
     handleHumanDevelop, handleDevDone, handleAIReview, handleDeploy,
-    handleAITest, handleAssignTester, handleClose,
+    handleAITest, handleUserTest, handleRunTests, handleAssignTester, handleClose,
   } = await import("./workflow/engine.js");
   const { getTicket } = await import("./workflow/store.js");
 
@@ -419,12 +419,46 @@ async function handleWorkflowCommand(lower: string, text: string, userId: string
     return handleAITest(ticket, userId);
   }
 
+  // "i want to test <number>" — generate test plan with curls for manual testing
+  m = lower.match(/^i\s+want\s+to\s+test\s+#?(\d+)$/);
+  if (m) {
+    const ticket = getTicket(parseInt(m[1]));
+    if (!ticket) return `❓ Ticket #${m[1]} not found.`;
+    return handleUserTest(ticket, userId);
+  }
+
+  // bare "i want to test" — use most recent ticket
+  if (lower === "i want to test" || lower === "test myself" || lower === "i'll test") {
+    const num = await findRecentTicket(userId);
+    if (!num) return `❓ No active ticket found. Please specify: \`i want to test #<number>\``;
+    const ticket = getTicket(num);
+    if (!ticket) return `❓ Ticket #${num} not found.`;
+    return handleUserTest(ticket, userId);
+  }
+
+  // "run tests <number>" — execute the test suite
+  m = lower.match(/^run\s+tests?\s+#?(\d+)$/);
+  if (m) {
+    const ticket = getTicket(parseInt(m[1]));
+    if (!ticket) return `❓ Ticket #${m[1]} not found.`;
+    return handleRunTests(ticket, userId);
+  }
+
+  // bare "run tests" — use most recent ticket
+  if (lower === "run tests" || lower === "run test") {
+    const num = await findRecentTicket(userId);
+    if (!num) return `❓ No active ticket found.`;
+    const ticket = getTicket(num);
+    if (!ticket) return `❓ Ticket #${num} not found.`;
+    return handleRunTests(ticket, userId);
+  }
+
   // test myself <number>
   m = lower.match(/^test\s+myself\s+#?(\d+)$/);
   if (m) {
     const ticket = getTicket(parseInt(m[1]));
     if (!ticket) return `❓ Ticket #${m[1]} not found.`;
-    return `Got it! Test #${m[1]} yourself. When all tests pass, type \`close ${m[1]}\`.`;
+    return handleUserTest(ticket, userId);
   }
 
   // close <number>
