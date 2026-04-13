@@ -233,6 +233,30 @@ export async function handleAIReview(
   ticket: WorkflowTicket,
   userId: string
 ): Promise<string> {
+  // If prNumber missing from store (e.g. after restart), look it up from GitHub
+  if (!ticket.prNumber) {
+    try {
+      const owner = process.env.GITHUB_OWNER;
+      const repo  = process.env.GITHUB_REPO;
+      const token = process.env.GITHUB_TOKEN;
+      if (owner && repo && token) {
+        const resp = await fetch(
+          `https://api.github.com/repos/${owner}/${repo}/pulls?state=open&per_page=20`,
+          { headers: { Authorization: `token ${token}`, Accept: "application/vnd.github+json" } }
+        );
+        if (resp.ok) {
+          const prs = await resp.json() as Array<{ number: number; title: string; html_url: string }>;
+          const pr  = prs.find((p) => p.title.includes(`#${ticket.issueNumber}`) || p.title.toLowerCase().includes(ticket.title.toLowerCase().slice(0, 20)));
+          if (pr) {
+            ticket.prNumber = pr.number;
+            ticket.prUrl    = pr.html_url;
+            saveTicket(ticket);
+          }
+        }
+      }
+    } catch { /* ignore */ }
+  }
+
   if (!ticket.prNumber) {
     return `No PR found for #${ticket.issueNumber} yet. Wait for the AI to finish coding.`;
   }
