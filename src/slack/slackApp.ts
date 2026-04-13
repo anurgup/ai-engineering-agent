@@ -242,10 +242,24 @@ async function routeMessage(session: ConversationSession, rawInput: string, user
   if (lower === "help") return helpText();
 
   // ── Dev assistant — intercept messages when developer is in coding mode ────
-  // Allow "done <number>" to pass through so workflow engine handles it
-  const isDoneCommand = /^done\s+#?\d+$/.test(lower);
-  if (hasDevSession(userId) && !isDoneCommand) {
+  // "done <number>" passes through to workflow engine; bare "done" closes session
+  const isDoneWithNumber = /^done\s+#?\d+$/.test(lower);
+  if (hasDevSession(userId) && !isDoneWithNumber) {
     return answerDevQuestion(userId, text);
+  }
+
+  // Bare "done" outside dev session — find the most recent ticket and confirm
+  if (lower === "done") {
+    const num = await findRecentTicket(userId);
+    if (num) {
+      const { getTicket } = await import("./workflow/store.js");
+      const ticket = getTicket(num) ?? await recoverTicketFromGitHub(num, userId);
+      if (ticket) {
+        const { handleClose } = await import("./workflow/engine.js");
+        return handleClose(ticket, userId);
+      }
+    }
+    return `❓ Type \`done <number>\` to close a ticket, e.g. \`done 14\``;
   }
 
   // ── Pipeline status ────────────────────────────────────────────────────────
