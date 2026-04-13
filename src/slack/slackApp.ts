@@ -510,12 +510,14 @@ async function handleWorkflowCommand(lower: string, text: string, userId: string
     return handleUserTest(ticket, userId);
   }
 
-  // close <number>
-  m = lower.match(/^close\s+#?(\d+)$/);
+  // close <number> [force]
+  m = lower.match(/^close\s+#?(\d+)(\s+force)?$/);
   if (m) {
-    const num = parseInt(m[1]);
+    const num   = parseInt(m[1]);
+    const force = !!m[2];
     const ticket = getTicket(num) ?? await recoverTicketFromGitHub(num, userId);
     if (!ticket) return `❓ Ticket #${m[1]} not found.`;
+    if (force) ticket.prNumber = ticket.prNumber ?? -1; // bypass PR check
     return handleClose(ticket, userId, true);
   }
 

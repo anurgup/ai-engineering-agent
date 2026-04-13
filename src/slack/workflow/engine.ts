@@ -743,6 +743,18 @@ export async function handleClose(
   userId:  string,
   passed?: boolean
 ): Promise<string> {
+  // Warn if no PR has been created — closing without a PR means code was never reviewed
+  if (!ticket.prNumber && ticket.stage !== "in_testing") {
+    return (
+      `⚠️ *Ticket #${ticket.issueNumber} has no PR yet.*\n\n` +
+      `Closing without a PR means the code won't be reviewed or deployed.\n\n` +
+      `Did you mean:\n` +
+      `• \`review ${ticket.issueNumber}\` — AI reviews the PR\n` +
+      `• \`merge ${ticket.issueNumber}\` — merge and deploy\n` +
+      `• \`close ${ticket.issueNumber} force\` — close anyway without a PR`
+    );
+  }
+
   await transitionStage(ticket.issueNumber, "done", userId, passed ? "All tests passed" : "Closed");
 
   // Close GitHub issue via API
