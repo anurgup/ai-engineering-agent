@@ -237,7 +237,7 @@ export async function handleAIReview(
     return `No PR found for #${ticket.issueNumber} yet. Wait for the AI to finish coding.`;
   }
 
-  await notifyChannel(STATUS_CHANNEL, `🔍 AI is reviewing PR #${ticket.prNumber} for ticket #${ticket.issueNumber}...`);
+  await notifyUser(ticket.createdBy ?? userId, `🔍 AI is reviewing PR #${ticket.prNumber} for ticket #${ticket.issueNumber}...`);
 
   try {
     const review = await reviewPR(ticket.prNumber, ticket.issueNumber, ticket.title);
@@ -428,13 +428,19 @@ const STAGE_EMOJI: Record<TicketStage, string> = {
 };
 
 async function postStatusUpdate(ticket: WorkflowTicket, note?: string): Promise<void> {
-  const emoji     = STAGE_EMOJI[ticket.stage];
-  const assignee  = ticket.assigneeName ? ` · ${ticket.assigneeName}` : "";
-  const noteStr   = note ? `\n_${note}_` : "";
-
-  await notifyChannel(
-    STATUS_CHANNEL,
+  const emoji    = STAGE_EMOJI[ticket.stage];
+  const assignee = ticket.assigneeName ? ` · ${ticket.assigneeName}` : "";
+  const noteStr  = note ? `\n_${note}_` : "";
+  const msg      =
     `${emoji} *#${ticket.issueNumber}* moved to *${ticket.stage.replace("_", " ").toUpperCase()}*${assignee}${noteStr}\n` +
-    `_${ticket.title}_`
-  );
+    `_${ticket.title}_`;
+
+  // Only post to channel if a real channel ID is configured (not the default "general")
+  const channel = process.env.SLACK_STATUS_CHANNEL;
+  if (channel && channel !== "general") {
+    await notifyChannel(channel, msg);
+  } else if (ticket.createdBy) {
+    // Fall back to DMing the ticket creator
+    await notifyUser(ticket.createdBy, msg);
+  }
 }
