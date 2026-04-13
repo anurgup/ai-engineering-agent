@@ -140,14 +140,18 @@ export async function answerDevQuestion(userId: string, question: string): Promi
   // ── Normal Q&A mode ───────────────────────────────────────────────────────
   const systemPrompt =
     `You are a senior software engineer pair-programming with a developer.
-You know their codebase AND their system architecture/domain knowledge deeply.
-Use both technical (code patterns) AND functional (business rules) context.
-Be concise and practical. Match their existing conventions.
-If asked to write code, show it in a code block.
+The FULL codebase context is provided above — repo files, signatures, and previews are ALL already loaded.
 
-IMPORTANT RULES:
+CRITICAL RULES (never violate):
+- NEVER ask the developer for file paths, file contents, or code snippets — you already have them in the context above
+- NEVER say "please share the file" or "can you paste the code" — use what is provided
+- If you need to reference a file, use what is in the "Your Codebase" section above
+- Answer directly using the context provided
+
+STYLE RULES:
+- Be concise and practical. Match existing conventions.
+- If asked to write code, show it in a code block.
 - Do NOT ask open-ended "what's next?" or suggest other tickets/features
-- Do NOT offer to do more work once the current task is done
 - When the task is complete, say so briefly and tell the developer to type "done ${session.issueNumber}" to close the session
 - Stay focused on the current ticket only
 
@@ -163,8 +167,8 @@ Turn ${session.turns.length + 1} of ${MAX_TURNS}`;
   console.log(`[devAssistant] Answering for #${session.issueNumber} (~${Math.ceil(userContent.length / 4)} tokens)`);
 
   const msg = await client.messages.create({
-    model:      "claude-haiku-4-5-20251001",
-    max_tokens: 600,
+    model:      "claude-sonnet-4-6",
+    max_tokens: 800,
     system:     systemPrompt,
     messages:   [{ role: "user", content: userContent }],
   });
@@ -214,8 +218,8 @@ Rules:
   ].filter(Boolean).join("\n");
 
   const msg = await client.messages.create({
-    model:      "claude-haiku-4-5-20251001",
-    max_tokens: 1200,
+    model:      "claude-sonnet-4-6",
+    max_tokens: 1500,
     system:     systemPrompt,
     messages:   [{ role: "user", content: userContent }],
   });
@@ -298,12 +302,13 @@ async function buildRAGContext(question: string, session: DevSession): Promise<s
   const sections: string[] = [];
 
   // 1. Relevant repo files (most important — actual codebase)
-  const repoFiles = await searchRepo(queryVector, 4);
+  const repoFiles = await searchRepo(queryVector, 5);
   if (repoFiles.length > 0) {
     sections.push("## Your Codebase (relevant files)");
     for (const f of repoFiles) {
-      const sigs = f.signatures.slice(0, 8).join("\n  ");
-      sections.push(`### ${f.path}\n  ${sigs}\n  Preview: ${f.preview.slice(0, 150)}...`);
+      const sigs    = f.signatures.slice(0, 10).join("\n  ");
+      const preview = f.preview.length > 800 ? f.preview.slice(0, 800) + "..." : f.preview;
+      sections.push(`### ${f.path}\nSignatures:\n  ${sigs}\n\nContent preview:\n${preview}`);
     }
   }
 
@@ -333,7 +338,7 @@ async function buildRAGContext(question: string, session: DevSession): Promise<s
       sections.push("## Architecture & Domain Knowledge (from Notion)");
       notionHits.forEach((h) => {
         const meta    = h.metadata as { title?: string; excerpt?: string };
-        const excerpt = (meta.excerpt ?? h.text).slice(0, 300);
+        const excerpt = (meta.excerpt ?? h.text).slice(0, 500);
         sections.push(`### ${meta.title ?? "Doc"}\n${excerpt}`);
       });
     }
