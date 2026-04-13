@@ -14,7 +14,7 @@
 import type { WorkflowTicket, TicketStage, AssigneeRole, SlackUser } from "./types.js";
 import { getTicket, saveTicket, findUserByName, registerUser, getUser } from "./store.js";
 import { notifyUser, notifyChannel, lookupSlackUser } from "../notifier.js";
-import { generateTestCases, generateTestSuite, executeTestSuite, formatTestResults, formatTestSuitePreview } from "../testGenerator.js";
+import { generateTestSuite, executeTestSuite, formatTestResults, formatTestSuitePreview } from "../testGenerator.js";
 import { reviewPR } from "../prReviewer.js";
 import { buildGraph } from "../../agent/graph.js";
 import { startDevSession } from "../devAssistant.js";
@@ -164,8 +164,8 @@ export async function handleAssign(
     if (!user) {
       const slackUser = await lookupSlackUser(assigneeName);
       if (slackUser) {
-        registerUser({ ...slackUser, role });
-        user = slackUser;
+        user = { ...slackUser, role };   // apply the correct role
+        registerUser(user);
       }
     }
   }

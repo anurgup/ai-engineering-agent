@@ -367,7 +367,7 @@ async function handleWorkflowCommand(lower: string, text: string, userId: string
   if (lower === "ai" || lower === "develop" || lower === "ai develop") {
     const num = await findRecentTicket(userId);
     if (!num) return `❓ No active ticket found. Please specify: \`develop #<number>\``;
-    const ticket = getTicket(num);
+    const ticket = getTicket(num) ?? await recoverTicketFromGitHub(num, userId);
     if (!ticket) return `❓ Ticket #${num} not found.`;
     return handleAIDevelop(ticket, userId);
   }
@@ -550,20 +550,45 @@ async function recoverTicketFromGitHub(issueNumber: number, userId: string) {
   const owner = process.env.GITHUB_OWNER;
   const repo  = process.env.GITHUB_REPO;
   const token = process.env.GITHUB_TOKEN;
-  if (!owner || !repo || !token) return null;
+  if (!owner || !repo || !token) {
+    console.warn(`[store] Cannot recover ticket #${issueNumber} — GitHub env vars not set`);
+    return null;
+  }
   try {
-    const resp = await fetch(
+    const ghHeaders = { Authorization: `token ${token}`, Accept: "application/vnd.github+json" };
+
+    // Fetch the issue
+    const issueResp = await fetch(
       `https://api.github.com/repos/${owner}/${repo}/issues/${issueNumber}`,
-      { headers: { Authorization: `token ${token}`, Accept: "application/vnd.github+json" } }
+      { headers: ghHeaders }
     );
-    if (!resp.ok) return null;
-    const issue = await resp.json() as { number: number; title: string; html_url: string; state: string };
+    if (!issueResp.ok) return null;
+    const issue = await issueResp.json() as { number: number; title: string; html_url: string; state: string };
+
     const ticket = createWorkflowTicket(issue.number, issue.title, userId, issue.html_url);
-    ticket.stage = "in_review"; // assume it's at least been developed
+
+    // Look up any open/closed PR for this issue to set prNumber and stage
+    const prResp = await fetch(
+      `https://api.github.com/repos/${owner}/${repo}/pulls?state=all&per_page=50`,
+      { headers: ghHeaders }
+    );
+    if (prResp.ok) {
+      const prs = await prResp.json() as Array<{ number: number; html_url: string; head: { ref: string }; state: string; merged_at: string | null }>;
+      const pr  = prs.find((p) =>
+        p.head.ref.includes(`/${issueNumber}-`) || p.head.ref.includes(`/${issueNumber}/`)
+      );
+      if (pr) {
+        ticket.prNumber = pr.number;
+        ticket.prUrl    = pr.html_url;
+        ticket.stage    = pr.merged_at ? "in_testing" : "in_review";
+      }
+    }
+
     saveTicket(ticket);
-    console.log(`[store] Recovered ticket #${issueNumber} from GitHub`);
+    console.log(`[store] Recovered ticket #${issueNumber} (stage=${ticket.stage}, pr=${ticket.prNumber ?? "none"}) from GitHub`);
     return ticket;
-  } catch {
+  } catch (err) {
+    console.warn(`[store] Recovery failed for ticket #${issueNumber}:`, err);
     return null;
   }
 }

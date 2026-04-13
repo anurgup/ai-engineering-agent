@@ -297,7 +297,9 @@ function buildCurl(method: string, url: string, body: string | null, headers: Re
   }
 
   if (body) {
-    parts.push(`  -d '${body}'`);
+    // Escape single quotes in body so the shell doesn't break
+    const safeBody = body.replace(/'/g, `'\\''`);
+    parts.push(`  -d '${safeBody}'`);
   }
 
   return parts.join(" \\\n");
