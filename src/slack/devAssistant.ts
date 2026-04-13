@@ -28,13 +28,15 @@ const client = new Anthropic();
 // ── Session state per developer ───────────────────────────────────────────────
 
 interface DevSession {
-  userId:        string;
-  issueNumber:   number;
-  issueTitle:    string;
-  turns:         { role: "user" | "assistant"; content: string }[];
-  summary:       string;
-  createdAt:     Date;
-  updatedAt:     Date;
+  userId:         string;
+  issueNumber:    number;
+  issueTitle:     string;
+  turns:          { role: "user" | "assistant"; content: string }[];
+  summary:        string;
+  cachedContext:  string;   // RAG context — reused for 4 turns to avoid re-fetching
+  contextTurn:    number;   // turn index when context was last fetched
+  createdAt:      Date;
+  updatedAt:      Date;
 }
 
 const devSessions = new Map<string, DevSession>();
@@ -44,10 +46,12 @@ export function startDevSession(userId: string, issueNumber: number, issueTitle:
     userId,
     issueNumber,
     issueTitle,
-    turns:     [],
-    summary:   "",
-    createdAt: new Date(),
-    updatedAt: new Date(),
+    turns:          [],
+    summary:        "",
+    cachedContext:  "",
+    contextTurn:    -99,
+    createdAt:      new Date(),
+    updatedAt:      new Date(),
   });
   console.log(`[devAssistant] Started session for ${userId} on ticket #${issueNumber}`);
 
@@ -118,18 +122,24 @@ export async function answerDevQuestion(userId: string, question: string): Promi
   session.updatedAt = new Date();
   session.turns.push({ role: "user", content: question });
 
-  // Roll up history if too long
-  if (session.turns.length > 8) {
+  // Compress history early — at 4 turns (not 8) to keep context window lean
+  if (session.turns.length > 4) {
     session.summary = await summarizeTurns(session.summary, session.turns.splice(0, 4));
   }
 
-  // Build RAG context
-  const context = await buildRAGContext(question, session);
+  // RAG context — re-fetch only every 4 turns; reuse cache in between
+  const turnIndex = session.turns.length;
+  if (!session.cachedContext || (turnIndex - session.contextTurn) >= 4) {
+    session.cachedContext = await buildRAGContext(question, session);
+    session.contextTurn   = turnIndex;
+    console.log(`[devAssistant] RAG refreshed at turn ${turnIndex}`);
+  }
+  const context = session.cachedContext;
 
-  const historyText = session.summary ? `[Earlier context] ${session.summary}\n\n` : "";
+  const historyText = session.summary ? `[Earlier] ${session.summary}\n\n` : "";
   const recentTurns = session.turns
-    .slice(-6)
-    .map((t) => `${t.role === "user" ? "Developer" : "Assistant"}: ${t.content}`)
+    .slice(-4)
+    .map((t) => `${t.role === "user" ? "Dev" : "Bot"}: ${t.content}`)
     .join("\n");
 
   // ── Write-to-file mode ────────────────────────────────────────────────────
@@ -168,7 +178,7 @@ Turn ${session.turns.length + 1} of ${MAX_TURNS}`;
 
   const msg = await client.messages.create({
     model:      "claude-sonnet-4-6",
-    max_tokens: 800,
+    max_tokens: 500,
     system:     systemPrompt,
     messages:   [{ role: "user", content: userContent }],
   });
@@ -176,7 +186,9 @@ Turn ${session.turns.length + 1} of ${MAX_TURNS}`;
   const block  = msg.content[0];
   const answer = block.type === "text" ? block.text : "Sorry, I couldn't generate a response.";
 
-  session.turns.push({ role: "assistant", content: answer });
+  // Store a truncated version in history to prevent snowball growth
+  const storedAnswer = answer.length > 250 ? answer.slice(0, 250) + "…" : answer;
+  session.turns.push({ role: "assistant", content: storedAnswer });
   devSessions.set(userId, session);
 
   return answer;
@@ -301,14 +313,14 @@ async function buildRAGContext(question: string, session: DevSession): Promise<s
 
   const sections: string[] = [];
 
-  // 1. Relevant repo files (most important — actual codebase)
-  const repoFiles = await searchRepo(queryVector, 5);
+  // 1. Relevant repo files — top 3 only, 350-char preview to keep context lean
+  const repoFiles = await searchRepo(queryVector, 3);
   if (repoFiles.length > 0) {
-    sections.push("## Your Codebase (relevant files)");
+    sections.push("## Codebase");
     for (const f of repoFiles) {
-      const sigs    = f.signatures.slice(0, 10).join("\n  ");
-      const preview = f.preview.length > 800 ? f.preview.slice(0, 800) + "..." : f.preview;
-      sections.push(`### ${f.path}\nSignatures:\n  ${sigs}\n\nContent preview:\n${preview}`);
+      const sigs    = f.signatures.slice(0, 6).join(", ");
+      const preview = f.preview.slice(0, 350);
+      sections.push(`### ${f.path}\n${sigs}\n${preview}`);
     }
   }
 
@@ -333,12 +345,12 @@ async function buildRAGContext(question: string, session: DevSession): Promise<s
     const notionStore = new RAGStore(
       process.env.NOTION_VECTOR_STORE_PATH ?? path.resolve("data", "notion-vectors.json")
     );
-    const notionHits = (await notionStore.search(queryVector, 3)).filter((h) => h.score > 0.45);
+    const notionHits = (await notionStore.search(queryVector, 2)).filter((h) => h.score > 0.5);
     if (notionHits.length > 0) {
-      sections.push("## Architecture & Domain Knowledge (from Notion)");
+      sections.push("## Domain Knowledge");
       notionHits.forEach((h) => {
         const meta    = h.metadata as { title?: string; excerpt?: string };
-        const excerpt = (meta.excerpt ?? h.text).slice(0, 500);
+        const excerpt = (meta.excerpt ?? h.text).slice(0, 200);
         sections.push(`### ${meta.title ?? "Doc"}\n${excerpt}`);
       });
     }
