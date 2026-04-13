@@ -10,8 +10,6 @@ import { readRepoContext } from "./nodes/readRepoContext.js";
 import { generateCode } from "./nodes/generateCode.js";
 import { humanReview } from "./nodes/humanReview.js";
 import { pushToGitHub } from "./nodes/pushToGitHub.js";
-import { updateNotion } from "./nodes/updateNotion.js";
-import { markDone } from "./nodes/markDone.js";
 import { handleRejection } from "./nodes/handleRejection.js";
 
 function routeAfterReview(state: typeof AgentStateAnnotation.State): string {
@@ -30,8 +28,6 @@ export function buildGraph() {
     .addNode("generateCode", generateCode)
     .addNode("humanReview", humanReview)
     .addNode("pushToGitHub", pushToGitHub)
-    .addNode("updateNotion", updateNotion)
-    .addNode("markDone", markDone)
     .addNode("handleRejection", handleRejection)
 
     // Context gathering pipeline
