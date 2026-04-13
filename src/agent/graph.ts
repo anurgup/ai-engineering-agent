@@ -51,10 +51,9 @@ export function buildGraph() {
       handleRejection: "handleRejection",
     })
 
-    // Post-approval flow
-    .addEdge("pushToGitHub", "updateNotion")
-    .addEdge("updateNotion", "markDone")
-    .addEdge("markDone", END)
+    // After PR is created — stop and wait for human to review/deploy/close
+    // updateNotion and markDone are triggered manually via Slack commands
+    .addEdge("pushToGitHub", END)
     .addEdge("handleRejection", END);
 
   return graph.compile();

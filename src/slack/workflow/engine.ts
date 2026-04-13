@@ -105,18 +105,21 @@ export async function handleAIDevelop(
   graph
     .invoke({ ticketKey: String(ticket.issueNumber), autoApprove: true })
     .then(async () => {
-      // Reload ticket after agent finishes
-      const updated = getTicket(ticket.issueNumber)!;
+      // Reload ticket after agent finishes — PR URL is now set
+      const updated = getTicket(ticket.issueNumber) ?? ticket;
       await transitionStage(ticket.issueNumber, "in_review", "ai", "AI finished coding");
-      const msg =
-        `✅ *AI finished coding for #${ticket.issueNumber}: ${ticket.title}*\n` +
-        `${updated?.prUrl ? `🔀 PR: ${updated.prUrl}\n` : ""}` +
-        `\nReply \`review ${ticket.issueNumber}\` for AI code review, or \`deploy ${ticket.issueNumber}\` to deploy to staging.`;
-      // DM the user who triggered it + post to channel if configured
+
+      const msg = [
+        `✅ *AI finished coding for #${ticket.issueNumber}: ${ticket.title}*`,
+        updated.prUrl ? `🔀 PR: ${updated.prUrl}` : "",
+        ``,
+        `What would you like to do next?`,
+        `• \`review ${ticket.issueNumber}\` — AI reviews the PR for code quality`,
+        `• \`deploy ${ticket.issueNumber}\` — deploy to staging and start testing`,
+        `• \`close ${ticket.issueNumber}\` — close the ticket as done`,
+      ].filter(Boolean).join("\n");
+
       await notifyUser(userId, msg);
-      if (process.env.SLACK_STATUS_CHANNEL && process.env.SLACK_STATUS_CHANNEL !== "general") {
-        await notifyChannel(process.env.SLACK_STATUS_CHANNEL, msg);
-      }
     })
     .catch(async (err: unknown) => {
       const errMsg = `❌ *AI coding failed for #${ticket.issueNumber}*: ${err instanceof Error ? err.message : String(err)}`;
