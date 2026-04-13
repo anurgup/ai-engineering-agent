@@ -246,12 +246,18 @@ export async function handleAIReview(
       const token = process.env.GITHUB_TOKEN;
       if (owner && repo && token) {
         const resp = await fetch(
-          `https://api.github.com/repos/${owner}/${repo}/pulls?state=open&per_page=20`,
+          `https://api.github.com/repos/${owner}/${repo}/pulls?state=all&per_page=50`,
           { headers: { Authorization: `token ${token}`, Accept: "application/vnd.github+json" } }
         );
         if (resp.ok) {
           const prs = await resp.json() as Array<{ number: number; title: string; html_url: string }>;
-          const pr  = prs.find((p) => p.title.includes(`#${ticket.issueNumber}`) || p.title.toLowerCase().includes(ticket.title.toLowerCase().slice(0, 20)));
+          const num = ticket.issueNumber;
+          const pr  = prs.find((p) =>
+            p.title.includes(`#${num}`) ||
+            p.title.includes(`(${num})`) ||
+            p.title.includes(`(#${num})`) ||
+            p.title.toLowerCase().includes(ticket.title.toLowerCase().slice(0, 30))
+          );
           if (pr) {
             ticket.prNumber = pr.number;
             ticket.prUrl    = pr.html_url;
