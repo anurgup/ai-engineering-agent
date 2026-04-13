@@ -149,21 +149,34 @@ export class GitHubClient {
     title: string,
     body: string
   ): Promise<PullRequest> {
-    const { data } = await this.octokit.pulls.create({
-      owner: this.owner,
-      repo: this.repo,
-      head: branch,
-      base: this.baseBranch,
-      title,
-      body,
-    });
-
-    return {
-      number: data.number,
-      url: data.html_url,
-      branch,
-      title: data.title,
-    };
+    try {
+      const { data } = await this.octokit.pulls.create({
+        owner: this.owner,
+        repo:  this.repo,
+        head:  branch,
+        base:  this.baseBranch,
+        title,
+        body,
+      });
+      return { number: data.number, url: data.html_url, branch, title: data.title };
+    } catch (err: unknown) {
+      // If a PR already exists for this branch, find and return it
+      const msg = (err as { message?: string }).message ?? "";
+      if (msg.includes("A pull request already exists")) {
+        const { data: prs } = await this.octokit.pulls.list({
+          owner: this.owner,
+          repo:  this.repo,
+          head:  `${this.owner}:${branch}`,
+          state: "open",
+        });
+        if (prs.length > 0) {
+          const pr = prs[0];
+          console.log(`[github] PR already exists — reusing PR #${pr.number}`);
+          return { number: pr.number, url: pr.html_url, branch, title: pr.title };
+        }
+      }
+      throw err;
+    }
   }
 
   /**
