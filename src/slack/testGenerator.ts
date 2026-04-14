@@ -98,17 +98,20 @@ Output ONLY valid JSON (no markdown) in this exact format:
       "body": null or "{ \\"key\\": \\"value\\" }",
       "headers": { "Content-Type": "application/json" },
       "expectedStatus": 200,
-      "expectedFields": ["$.success", "$.data"]
+      "expectedFields": ["$.success", "$.data.id", "$.data.fieldName"]
     }
   ]
 }
 
-Rules:
-- Generate 4-6 test cases covering: happy path, edge cases, validation errors
-- Use realistic test data
-- For Spring Boot apps, common paths are /api/employee, /api/salary etc.
-- expectedFields use JSONPath syntax
-- Include at least one negative test (400/404 response)`;
+CRITICAL RULES:
+- This API wraps all responses as {"success": true/false, "data": {...}, "message": "..."}
+- ALWAYS use $.data.fieldName NOT $.fieldName for response fields (e.g. $.data.id, $.data.gender)
+- For list responses use $.data[0].fieldName
+- For error responses check $.success = false, do NOT check $.data fields
+- Generate 4-6 test cases: happy path, edge cases, validation error (400/404)
+- For GET/PATCH/DELETE tests that need an ID, use path /api/employee/emp_123 as placeholder — the runner will replace it with a real ID from a prior POST
+- For Spring Boot apps common paths: /api/employee, /api/salary, /api/department
+- expectedFields use JSONPath syntax — be precise about the nested structure`;
 
   const userContent = `Feature: ${title}
 
@@ -156,15 +159,72 @@ export interface TestResult {
 
 export async function executeTestSuite(suite: TestSuite): Promise<TestResult[]> {
   const results: TestResult[] = [];
+  // Capture IDs from POST/PUT responses so GET/PATCH/DELETE tests can reuse them
+  const capturedIds: Record<string, string> = {};
 
   for (const tc of suite.cases) {
-    const result = await runSingleTest(tc);
+    // Replace placeholder IDs with captured real IDs from previous responses
+    const resolved = resolveTestCase(tc, capturedIds);
+    const result   = await runSingleTest(resolved);
+
+    // Capture IDs from successful create responses for chaining
+    if (result.passed && ["POST", "PUT"].includes(tc.method) && result.response) {
+      try {
+        const json = JSON.parse(result.response);
+        const id   = extractId(json);
+        if (id) {
+          capturedIds["lastId"] = id;
+          capturedIds[`id_${results.length}`] = id;
+          console.log(`[testRunner] Captured ID from ${tc.name}: ${id}`);
+        }
+      } catch { /* non-JSON — ignore */ }
+    }
+
     results.push(result);
-    // Small delay between requests
-    await new Promise((r) => setTimeout(r, 500));
+    await new Promise((r) => setTimeout(r, 600));
   }
 
   return results;
+}
+
+/** Replace placeholder IDs in URL/body with real captured IDs */
+function resolveTestCase(tc: TestCase, ids: Record<string, string>): TestCase {
+  if (Object.keys(ids).length === 0) return tc;
+
+  const lastId = ids["lastId"];
+  if (!lastId) return tc;
+
+  // Replace fake placeholder IDs like emp_123, emp_456, 1, 123 in path
+  const resolvedPath = tc.path.replace(
+    /\/(emp_\w+|[0-9a-fA-F]{24}|id_placeholder|\btest[-_]?\w*id\b)/i,
+    `/${lastId}`
+  );
+  const resolvedUrl = `${tc.url.split(tc.path)[0]}${resolvedPath}`;
+
+  // Also replace in body if present
+  const resolvedBody = tc.body
+    ? tc.body.replace(/(emp_\w+|id_placeholder)/g, lastId)
+    : tc.body;
+
+  return { ...tc, path: resolvedPath, url: resolvedUrl, body: resolvedBody };
+}
+
+/** Extract the ID from a typical wrapped API response like {success, data: {id}} */
+function extractId(json: unknown): string | null {
+  if (!json || typeof json !== "object") return null;
+  const obj = json as Record<string, unknown>;
+
+  // {success, data: {id: ...}}
+  if (obj["data"] && typeof obj["data"] === "object") {
+    const data = obj["data"] as Record<string, unknown>;
+    const id   = data["id"] ?? data["_id"] ?? data["employeeId"];
+    if (id) return String(id);
+  }
+  // flat {id: ...}
+  const id = obj["id"] ?? obj["_id"];
+  if (id) return String(id);
+
+  return null;
 }
 
 async function runSingleTest(tc: TestCase): Promise<TestResult> {
@@ -192,8 +252,7 @@ async function runSingleTest(tc: TestCase): Promise<TestResult> {
       try {
         const json = JSON.parse(rawBody);
         for (const field of tc.expectedFields) {
-          const key   = field.replace(/^\$\./, "").split(".")[0].replace(/\[.*\]/, "");
-          if (json[key] === undefined) {
+          if (!resolveJsonPath(json, field)) {
             passed     = false;
             failReason = `Missing field: ${field}`;
             break;
@@ -288,6 +347,35 @@ export function formatTestSuitePreview(suite: TestSuite): string {
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
+
+/**
+ * Traverse a JSONPath expression like $.data.id or $.data[0].salary.
+ * Returns true if the path exists and has a non-undefined value.
+ */
+function resolveJsonPath(json: unknown, path: string): boolean {
+  // Strip leading $. or $
+  const clean  = path.replace(/^\$\.?/, "");
+  if (!clean)   return json !== undefined;
+
+  const parts  = clean.split(/\.|\[(\d+)\]/).filter(Boolean);
+  let   current: unknown = json;
+
+  for (const part of parts) {
+    if (current === null || current === undefined) return false;
+    if (typeof current === "object") {
+      const index = /^\d+$/.test(part) ? parseInt(part, 10) : undefined;
+      if (index !== undefined && Array.isArray(current)) {
+        current = current[index];
+      } else {
+        current = (current as Record<string, unknown>)[part];
+      }
+    } else {
+      return false;
+    }
+  }
+
+  return current !== undefined;
+}
 
 function buildCurl(method: string, url: string, body: string | null, headers: Record<string, string>): string {
   const parts = [`curl -s -X ${method} "${url}"`];
