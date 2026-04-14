@@ -34,15 +34,6 @@ const SCORE_MEDIUM = 0.55;   // hits found but need LLM to synthesise
 export async function answerKnowledgeQuestion(question: string): Promise<string> {
   console.log(`[knowledge] Question: "${question.slice(0, 80)}"`);
 
-  const store = new RAGStore(NOTION_STORE_PATH);
-
-  if (store.size === 0) {
-    return (
-      `📚 Knowledge base is empty.\n\n` +
-      `Add pages to Notion and type \`reindex\` to index them.`
-    );
-  }
-
   // ── Step 1: Embed question ────────────────────────────────────────────────
   if (!process.env.VOYAGE_API_KEY) {
     return `⚠️ VOYAGE_API_KEY not set — cannot search knowledge base.`;
@@ -56,9 +47,18 @@ export async function answerKnowledgeQuestion(question: string): Promise<string>
     return `❌ Could not embed question: ${(err as Error).message}`;
   }
 
-  // ── Step 2: Search Pinecone ───────────────────────────────────────────────
+  // ── Step 2: Search Pinecone directly — don't rely on local size ──────────
+  // local store.size resets on every Railway restart even if Pinecone has data
+  const store   = new RAGStore(NOTION_STORE_PATH);
   const allHits = await store.search(queryVector, 5);
   const hits    = allHits.filter((h) => h.score >= SCORE_MEDIUM);
+
+  if (allHits.length === 0) {
+    return (
+      `📚 Knowledge base is empty.\n\n` +
+      `Add pages to Notion and type \`reindex\` to index them.`
+    );
+  }
 
   if (hits.length === 0) {
     console.log(`[knowledge] No hits above threshold (best: ${allHits[0]?.score.toFixed(3) ?? "n/a"})`);
@@ -195,10 +195,10 @@ async function answerWithLLM(
     model:      "claude-haiku-4-5-20251001",
     max_tokens: 400,
     system:
-      `You answer questions about system architecture, clusters, markets, services, and teams.
-Answer ONLY from the provided context. Be concise and direct.
-If the answer is not clearly in the context, say "Not documented in Notion."
-Format for Slack: use bullet points for lists, *bold* for key terms.`,
+      `You are a knowledgeable assistant answering questions about this organisation's domain, processes, architecture, and business rules.
+Answer ONLY from the provided Notion context. Be concise and direct.
+If the answer is not clearly in the context, say "Not documented in Notion — try \`reindex\` if you recently added pages."
+Format for Slack: use bullet points for lists, *bold* for key terms. No long paragraphs.`,
     messages: [{
       role:    "user",
       content: `Context:\n${context}\n\nQuestion: ${question}`,

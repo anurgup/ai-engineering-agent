@@ -336,7 +336,15 @@ async function routeMessage(session: ConversationSession, rawInput: string, user
 
   // ── Knowledge Q&A — "ask <question>" or "? <question>" or natural questions ─
   const askMatch = text.match(/^(?:ask|what|which|who|where|how|why|when|\?)\s+(.+)/i);
-  if (askMatch ?? lower.includes("cluster") ?? lower.includes("service") ?? lower.includes("market") ?? lower.includes("team") ?? lower.includes("flow") ?? lower.includes("architecture")) {
+  const isNaturalQuestion =
+    lower.includes("cluster")      || lower.includes("service")  ||
+    lower.includes("market")       || lower.includes("team")     ||
+    lower.includes("flow")         || lower.includes("architecture") ||
+    lower.includes("how does")     || lower.includes("what is")  ||
+    lower.includes("how should")   || lower.includes("what are") ||
+    lower.includes("explain")      || lower.includes("describe") ||
+    lower.includes("tell me about") || lower.includes("how do");
+  if (askMatch || isNaturalQuestion) {
     const question = askMatch ? askMatch[1] : text;
     return answerKnowledgeQuestion(question);
   }
