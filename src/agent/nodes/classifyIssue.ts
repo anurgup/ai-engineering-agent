@@ -4,7 +4,7 @@ import * as path from "path";
 import { AgentState, IssueClassification } from "../state.js";
 import { getCommenter } from "../../tools/issueCommenter.js";
 
-const MODEL = "claude-haiku-4-5-20251001";
+const MODEL = "claude-sonnet-4-6";
 
 /** Recursively collect all source file paths in the repo (excluding noise). */
 function collectRepoFiles(repoPath: string): string[] {
@@ -151,6 +151,29 @@ Respond ONLY with valid JSON, no markdown fences:
       relevantFilePaths: getBuildFiles(allFiles, language),
       keywords: ticket.title.split(" ").slice(0, 3),
     };
+  }
+
+  // ── Always include architectural anchors for JVM projects ──────────────────
+  // For Java/Kotlin, the controller always shows what endpoints exist, the
+  // service shows what business logic already runs, and the repository shows
+  // the persistence contract.  Missing any of these lets Claude invent endpoints
+  // that don't exist (or skip ones that are needed).
+  const isJvm = ["java", "kotlin", "groovy"].includes(language.toLowerCase());
+  if (isJvm) {
+    const alreadyIncluded = new Set(classification.relevantFilePaths.map(f => f.toLowerCase()));
+    const mustHavePatterns = [
+      /Controller\.java$/i, /Controller\.kt$/i,
+      /Service\.java$/i,    /ServiceImpl\.java$/i, /Service\.kt$/i,
+      /Repository\.java$/i, /Repository\.kt$/i,
+    ];
+    const anchors = allFiles.filter(f =>
+      mustHavePatterns.some(re => re.test(f)) && !alreadyIncluded.has(f.toLowerCase())
+    );
+    if (anchors.length > 0) {
+      console.log(`[classifyIssue] ✚ Injecting ${anchors.length} JVM anchor file(s):`);
+      anchors.forEach(f => console.log(`  + ${f}`));
+      classification.relevantFilePaths = [...classification.relevantFilePaths, ...anchors];
+    }
   }
 
   console.log(`[classifyIssue] ✓ Type: ${classification.type.toUpperCase()} — ${classification.reason}`);

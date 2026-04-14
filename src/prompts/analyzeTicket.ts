@@ -135,6 +135,7 @@ This issue requires MODIFYING existing code, NOT creating new files.
 - Keep the same class names, method signatures, package names, and patterns
 - If a file needs changes, return the COMPLETE updated file content (not a diff)
 - Pay close attention to the existing implementation and integrate cleanly
+- CRITICAL: If the feature requires an endpoint or method that is NOT in the existing files, you MUST add it — never assume it exists somewhere you cannot see
 
 ${langSection}`;
 
@@ -168,6 +169,24 @@ ${repoSection}
 
 ## Architecture Documentation (from Notion)
 ${notionSection}
+
+## Pre-Implementation Completeness Audit (MANDATORY)
+Before writing any code, mentally answer these questions:
+
+1. **Endpoint audit** — List every HTTP endpoint (GET/POST/PATCH/DELETE) that a test for this feature would call.
+   For each endpoint: does it already exist in the controller file(s) above? If not, you MUST implement it.
+
+2. **Service method audit** — For each endpoint, does the corresponding service method exist?
+   If not, you MUST implement it.
+
+3. **DTO/model audit** — Does the request body, response, or entity need new fields?
+   Add them to the relevant model/DTO files — never reference a field that doesn't exist.
+
+4. **Database/schema audit** — If a new column/field is needed, is there a migration or schema update?
+   Include it if required.
+
+If you discover that the controller is missing an endpoint that the ticket implicitly requires, you MUST add it.
+Do NOT assume "someone else already did it" — if it's not in the files above, it doesn't exist.
 
 ## Output Instructions
 Analyze everything above carefully, then generate your implementation.
