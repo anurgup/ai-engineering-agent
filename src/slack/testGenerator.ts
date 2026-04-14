@@ -111,7 +111,9 @@ CRITICAL RULES:
 - Generate 4-6 test cases: happy path, edge cases, validation error (400/404)
 - For GET/PATCH/DELETE tests that need an ID, use path /api/employee/emp_123 as placeholder — the runner will replace it with a real ID from a prior POST
 - For Spring Boot apps common paths: /api/employee, /api/salary, /api/department
-- expectedFields use JSONPath syntax — be precise about the nested structure`;
+- Single employee GET: GET /api/employee/{id} — use path /api/employee/emp_123 (runner replaces with real ID)
+- expectedFields use JSONPath syntax — be precise about the nested structure
+- Always order tests: POST (creates) first, then GET/PATCH/DELETE so IDs can be chained`;
 
   const userContent = `Feature: ${title}
 
