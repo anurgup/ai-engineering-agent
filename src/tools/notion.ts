@@ -290,28 +290,67 @@ export class NotionClient {
   }
 
   /**
-   * Find existing page by title, update it if found, create new one if not.
+   * Update an existing page by ID — replaces all content.
+   * Preferred over upsertPage when the page ID is already known.
    */
-  async upsertPage(title: string, markdownContent: string): Promise<{ id: string; url: string; created: boolean }> {
+  async updatePageById(pageId: string, markdownContent: string): Promise<{ id: string; url: string }> {
+    // Delete all existing blocks (paginate to handle >100 blocks)
+    let cursor: string | undefined;
+    do {
+      const resp = await this.client.blocks.children.list({
+        block_id:   pageId,
+        page_size:  100,
+        ...(cursor ? { start_cursor: cursor } : {}),
+      });
+      await Promise.all(
+        resp.results.map((b) =>
+          this.client.blocks.delete({ block_id: (b as { id: string }).id }).catch(() => {})
+        )
+      );
+      cursor = resp.has_more && resp.next_cursor ? resp.next_cursor : undefined;
+    } while (cursor);
+
+    // Append new content in batches of 100
+    const blocks = markdownToNotionBlocks(markdownContent);
+    for (let i = 0; i < blocks.length; i += 100) {
+      // @ts-expect-error Notion SDK type mismatch
+      await this.client.blocks.children.append({ block_id: pageId, children: blocks.slice(i, i + 100) });
+    }
+
+    const page = await this.client.pages.retrieve({ page_id: pageId }) as { id: string; url: string };
+    console.log(`[notion] ✓ Updated existing page: ${page.url}`);
+    return { id: page.id, url: page.url };
+  }
+
+  /**
+   * Find existing page by title, update it if found, create new one if not.
+   * Pass knownPageId to skip the search entirely and update directly by ID.
+   */
+  async upsertPage(
+    title:         string,
+    markdownContent: string,
+    knownPageId?:  string
+  ): Promise<{ id: string; url: string; created: boolean }> {
+    // Fast path — update by stored ID (no search needed)
+    if (knownPageId) {
+      console.log(`[notion] Updating page by stored ID ${knownPageId}…`);
+      try {
+        const result = await this.updatePageById(knownPageId, markdownContent);
+        return { ...result, created: false };
+      } catch (err) {
+        // Page may have been deleted — fall through to search/create
+        console.warn(`[notion] updatePageById failed (${(err as Error).message}), falling back to search`);
+      }
+    }
+
     // Search for existing page with this exact title
     const existing = await this.searchPages(title);
-    const match = existing.find((p) => p.title === title);
+    const match    = existing.find((p) => p.title === title);
 
     if (match) {
-      console.log(`[notion] Found existing page "${title}" — updating...`);
-      // Delete all existing blocks then re-append
-      const childrenResp = await this.client.blocks.children.list({ block_id: match.id, page_size: 100 });
-      for (const block of childrenResp.results) {
-        await this.client.blocks.delete({ block_id: (block as { id: string }).id }).catch(() => {});
-      }
-      const blocks = markdownToNotionBlocks(markdownContent);
-      const batches = [];
-      for (let i = 0; i < blocks.length; i += 100) batches.push(blocks.slice(i, i + 100));
-      for (const batch of batches) {
-        // @ts-expect-error Notion SDK type mismatch
-        await this.client.blocks.children.append({ block_id: match.id, children: batch });
-      }
-      return { id: match.id, url: match.url, created: false };
+      console.log(`[notion] Found existing page by title "${title}" — updating…`);
+      const result = await this.updatePageById(match.id, markdownContent);
+      return { ...result, created: false };
     }
 
     const result = await this.createPage(title, markdownContent);

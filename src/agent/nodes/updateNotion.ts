@@ -4,6 +4,7 @@ import { NotionClient } from "../../tools/notion.js";
 import { buildNotionDocPrompt } from "../../prompts/notionDoc.js";
 import { addPageToIndex } from "./readNotion.js";
 import { getCommenter } from "../../tools/issueCommenter.js";
+import { getTicket, saveTicket } from "../../slack/workflow/store.js";
 
 const MODEL = "claude-haiku-4-5-20251001";
 
@@ -35,11 +36,22 @@ export async function updateNotion(state: AgentState): Promise<Partial<AgentStat
 
   const pageTitle = `Issue #${ticket.number}: ${ticket.title}`;
 
+  // Look up stored Notion page ID from ticket (so we update in place, not create new)
+  const storedTicket  = getTicket(ticket.number);
+  const knownPageId   = storedTicket?.notionPageId;
+
   let notionDoc;
   try {
-    const result = await notion.upsertPage(pageTitle, markdownContent);
+    const result = await notion.upsertPage(pageTitle, markdownContent, knownPageId);
     notionDoc = { id: result.id, url: result.url, title: pageTitle };
     console.log(`[updateNotion] ✓ Page ${result.created ? "created" : "updated"}: ${notionDoc.url}`);
+
+    // Persist page ID on the ticket so future runs update in place
+    if (storedTicket && storedTicket.notionPageId !== result.id) {
+      storedTicket.notionPageId = result.id;
+      storedTicket.notionUrl    = result.url;
+      saveTicket(storedTicket);
+    }
 
     // ── Instantly add this page to the RAG index so future tickets find it ──
     await addPageToIndex({

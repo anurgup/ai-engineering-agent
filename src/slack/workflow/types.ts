@@ -33,6 +33,7 @@ export interface WorkflowTicket {
   testCases?:       string;          // AI-generated test cases
   githubUrl?:       string;
   notionUrl?:       string;          // Notion doc URL (set by agent)
+  notionPageId?:    string;          // Notion page ID — used to update in place instead of creating new
   // Timestamps for SLA tracking
   createdAt:        Date;
   stageChangedAt:   Date;
