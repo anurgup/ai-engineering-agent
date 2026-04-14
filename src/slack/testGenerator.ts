@@ -134,11 +134,15 @@ Generate test cases for this feature.`;
   const raw     = block.text.trim().replace(/^```(?:json)?\n?/, "").replace(/\n?```$/, "").trim();
   const parsed  = JSON.parse(raw) as { cases: Array<Omit<TestCase, "curl" | "url">> };
 
-  // Build full test cases with curl commands
+  // Unique run token — appended to emails so re-runs never hit duplicate errors
+  const runToken = Date.now().toString(36).slice(-5);
+
+  // Build full test cases with curl commands + unique emails
   const cases: TestCase[] = parsed.cases.map((c) => {
+    const uniqueBody = makeEmailsUnique(c.body ?? null, runToken);
     const url  = `${baseUrl}${c.path ?? ""}`;
-    const curl = buildCurl(c.method, url, c.body ?? null, c.headers ?? {});
-    return { ...c, url, curl };
+    const curl = buildCurl(c.method, url, uniqueBody, c.headers ?? {});
+    return { ...c, body: uniqueBody ?? c.body, url, curl };
   });
 
   return { issueNumber, title, baseUrl, cases };
@@ -165,6 +169,10 @@ export async function executeTestSuite(suite: TestSuite): Promise<TestResult[]> 
   for (const tc of suite.cases) {
     // Replace placeholder IDs with captured real IDs from previous responses
     const resolved = resolveTestCase(tc, capturedIds);
+    // Pass captured ID into the test case for smarter list assertions
+    if (capturedIds["lastId"]) {
+      (resolved as TestCase & { _capturedId?: string })._capturedId = capturedIds["lastId"];
+    }
     const result   = await runSingleTest(resolved);
 
     // Capture IDs from successful create responses for chaining
@@ -250,8 +258,32 @@ async function runSingleTest(tc: TestCase): Promise<TestResult> {
       failReason = `Expected status ${tc.expectedStatus}, got ${resp.status}`;
     } else if (tc.expectedFields.length > 0) {
       try {
-        const json = JSON.parse(rawBody);
+        const json      = JSON.parse(rawBody);
+        const capturedId = (tc as TestCase & { _capturedId?: string })._capturedId;
+
         for (const field of tc.expectedFields) {
+          // For list responses: if field is $.data[0].X and we have a captured ID,
+          // find OUR employee in the list instead of blindly checking index 0
+          if (field.match(/\$\.data\[0\]\./) && capturedId && Array.isArray((json as Record<string,unknown>)["data"])) {
+            const list = (json as Record<string, unknown[]>)["data"];
+            const entry = list.find((e) => {
+              const obj = e as Record<string, unknown>;
+              return obj["id"] === capturedId || obj["_id"] === capturedId;
+            });
+            if (!entry) {
+              // fallback — check any entry in the list
+              const subField = field.replace(/\$\.data\[0\]\./, "");
+              const anyHas   = list.some((e) => (e as Record<string,unknown>)[subField] !== undefined);
+              if (!anyHas) { passed = false; failReason = `Missing field: ${field} (checked all ${list.length} entries)`; break; }
+            } else {
+              const subField = field.replace(/\$\.data\[0\]\./, "");
+              if ((entry as Record<string,unknown>)[subField] === undefined) {
+                passed = false; failReason = `Missing field: ${field} on created employee`; break;
+              }
+            }
+            continue;
+          }
+
           if (!resolveJsonPath(json, field)) {
             passed     = false;
             failReason = `Missing field: ${field}`;
@@ -391,6 +423,15 @@ function buildCurl(method: string, url: string, body: string | null, headers: Re
   }
 
   return parts.join(" \\\n");
+}
+
+/** Append a unique run token to every email in a JSON body string to avoid 409 duplicates */
+function makeEmailsUnique(body: string | null, token: string): string | null {
+  if (!body) return body;
+  return body.replace(
+    /"email"\s*:\s*"([^"@]+)@([^"]+)"/g,
+    (_: string, local: string, domain: string) => `"email": "${local}_${token}@${domain}"`
+  );
 }
 
 // Legacy export for backward compatibility
