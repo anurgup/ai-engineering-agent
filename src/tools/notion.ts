@@ -318,7 +318,7 @@ export class NotionClient {
     }
 
     const page = await this.client.pages.retrieve({ page_id: pageId }) as { id: string; url: string };
-    console.log(`[notion] ✓ Updated existing page: ${page.url}`);
+    console.log(`[notion] ✓ Updated page: ${page.url}`);
     return { id: page.id, url: page.url };
   }
 
@@ -338,8 +338,9 @@ export class NotionClient {
         const result = await this.updatePageById(knownPageId, markdownContent);
         return { ...result, created: false };
       } catch (err) {
-        // Page may have been deleted — fall through to search/create
-        console.warn(`[notion] updatePageById failed (${(err as Error).message}), falling back to search`);
+        const msg = (err as Error).message ?? "";
+        // 403 = integration lost access, 404 = page deleted — fall through to create
+        console.warn(`[notion] updatePageById failed (${msg}) — will search or create`);
       }
     }
 
