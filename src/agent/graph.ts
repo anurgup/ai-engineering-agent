@@ -10,6 +10,7 @@ import { readRepoContext } from "./nodes/readRepoContext.js";
 import { generateCode } from "./nodes/generateCode.js";
 import { humanReview } from "./nodes/humanReview.js";
 import { pushToGitHub } from "./nodes/pushToGitHub.js";
+import { updateNotion } from "./nodes/updateNotion.js";
 import { handleRejection } from "./nodes/handleRejection.js";
 
 function routeAfterReview(state: typeof AgentStateAnnotation.State): string {
@@ -28,6 +29,7 @@ export function buildGraph() {
     .addNode("generateCode", generateCode)
     .addNode("humanReview", humanReview)
     .addNode("pushToGitHub", pushToGitHub)
+    .addNode("updateNotion", updateNotion)
     .addNode("handleRejection", handleRejection)
 
     // Context gathering pipeline
@@ -47,9 +49,10 @@ export function buildGraph() {
       handleRejection: "handleRejection",
     })
 
-    // After PR is created — stop and wait for human to review/deploy/close
-    // updateNotion and markDone are triggered manually via Slack commands
-    .addEdge("pushToGitHub", END)
+    // After PR is created — update Notion doc then stop
+    // updateNotion failure is non-fatal (handled inside the node)
+    .addEdge("pushToGitHub", "updateNotion")
+    .addEdge("updateNotion", END)
     .addEdge("handleRejection", END);
 
   return graph.compile();

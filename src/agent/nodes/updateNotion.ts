@@ -8,11 +8,17 @@ import { getCommenter } from "../../tools/issueCommenter.js";
 const MODEL = "claude-haiku-4-5-20251001";
 
 export async function updateNotion(state: AgentState): Promise<Partial<AgentState>> {
+  // Skip gracefully if PR or code is missing (e.g. rejection path)
+  if (!state.pullRequest || !state.generatedCode) {
+    console.log(`[updateNotion] Skipping — no PR or generated code in state`);
+    return { currentStep: "updateNotion", logs: ["Notion update skipped (no PR)"] };
+  }
+
   const client = new Anthropic();
   const notion = new NotionClient();
   const ticket = state.ticket!;
-  const code = state.generatedCode!;
-  const pr = state.pullRequest!;
+  const code = state.generatedCode;
+  const pr = state.pullRequest;
 
   console.log(`\n[updateNotion] Generating Notion doc with Claude Haiku...`);
 
