@@ -108,12 +108,16 @@ export class GitHubClient {
     await this.git.checkout(this.baseBranch);
     await this.git.pull("origin", this.baseBranch);
 
-    // If the branch already exists locally (e.g. from a previous failed run), delete it first
+    // Delete local branch if it exists from a previous run
     const branches = await this.git.branchLocal();
     if (branches.all.includes(branch)) {
-      console.log(`[github] Branch "${branch}" already exists locally — deleting and recreating`);
-      await this.git.deleteLocalBranch(branch, true); // true = force delete
+      console.log(`[github] Branch "${branch}" exists locally — deleting and recreating`);
+      await this.git.deleteLocalBranch(branch, true);
     }
+    // Delete remote branch too — stale remote branches cause "no commits" PR errors
+    await this.git.raw(["push", "origin", "--delete", branch]).catch(() => {
+      // Ignore — branch may not exist on remote yet
+    });
 
     // Ensure git user is configured (required on Railway)
     await this.git.raw(["config", "user.email", "agent@ai-dev.bot"]).catch(() => {});
@@ -130,15 +134,38 @@ export class GitHubClient {
     }
 
     // Stage all new/modified files
+    if (files.length === 0) {
+      throw new Error(`No files generated for ticket #${ticketKey} — cannot commit empty changeset`);
+    }
     const filePaths = files.map((f) => f.path);
     await this.git.add(filePaths);
+
+    // Verify something is actually staged — git.commit() silently no-ops if nothing changed
+    const staged = await this.git.diff(["--staged", "--name-only"]);
+    if (!staged.trim()) {
+      // Try staging everything as fallback (catches untracked files missed by path list)
+      await this.git.add(["-A"]);
+      const stagedRetry = await this.git.diff(["--staged", "--name-only"]);
+      if (!stagedRetry.trim()) {
+        throw new Error(
+          `No file changes detected after staging for ticket #${ticketKey}. ` +
+          `Generated code may be identical to what is already in main.`
+        );
+      }
+    }
 
     return branch;
   }
 
   async commitAndPush(branch: string, ticketKey: string, summary: string): Promise<void> {
     const message = `feat(${ticketKey}): ${summary}`;
+    // Commit — throws if nothing staged (belt-and-suspenders check)
     await this.git.commit(message);
+    // Verify commit actually created something ahead of base
+    const ahead = await this.git.raw(["rev-list", `origin/${this.baseBranch}..HEAD`, "--count"]).catch(() => "0");
+    if (parseInt(ahead.trim(), 10) === 0) {
+      throw new Error(`Commit produced no new commits ahead of ${this.baseBranch} — push skipped to avoid empty PR`);
+    }
     await this.git.push("origin", branch, ["--set-upstream", "--force-with-lease"]).catch(() =>
       this.git.push("origin", branch, ["--set-upstream", "--force"])
     );
