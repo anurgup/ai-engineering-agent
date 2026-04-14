@@ -17,6 +17,7 @@ import { notifyUser, notifyChannel, lookupSlackUser } from "../notifier.js";
 import { generateTestSuite, executeTestSuite, formatTestResults, formatTestSuitePreview } from "../testGenerator.js";
 import { reviewPR } from "../prReviewer.js";
 import { buildGraph } from "../../agent/graph.js";
+import { withRetry, withTimeout, isTransientError } from "../../tools/retry.js";
 import { startDevSession } from "../devAssistant.js";
 
 // The main Slack channel to post status updates in
@@ -100,36 +101,8 @@ export async function handleAIDevelop(
   await transitionStage(ticket.issueNumber, "in_dev", userId, "AI developing");
   saveTicket(ticket);
 
-  // Fire the AI agent in background
-  const graph = buildGraph();
-  graph
-    .invoke({ ticketKey: String(ticket.issueNumber), autoApprove: true })
-    .then(async (result) => {
-      // Persist PR info returned by pushToGitHub node into the workflow ticket
-      const updated = getTicket(ticket.issueNumber) ?? ticket;
-      if (result?.pullRequest) {
-        updated.prNumber = result.pullRequest.number;
-        updated.prUrl    = result.pullRequest.url;
-        saveTicket(updated);
-      }
-      await transitionStage(ticket.issueNumber, "in_review", "ai", "AI finished coding");
-
-      const msg = [
-        `✅ *AI finished coding for #${ticket.issueNumber}: ${ticket.title}*`,
-        updated.prUrl ? `🔀 PR: ${updated.prUrl}` : "",
-        ``,
-        `What would you like to do next?`,
-        `• \`review ${ticket.issueNumber}\` — AI reviews the PR for code quality`,
-        `• \`deploy ${ticket.issueNumber}\` — deploy to staging and start testing`,
-        `• \`close ${ticket.issueNumber}\` — close the ticket as done`,
-      ].filter(Boolean).join("\n");
-
-      await notifyUser(userId, msg);
-    })
-    .catch(async (err: unknown) => {
-      const errMsg = `❌ *AI coding failed for #${ticket.issueNumber}*: ${err instanceof Error ? err.message : String(err)}`;
-      await notifyUser(userId, errMsg);
-    });
+  // Fire the AI agent in background with full self-healing guards
+  runAIJobWithGuards(ticket, userId);
 
   return (
     `🤖 *AI is now developing #${ticket.issueNumber}*\n` +
@@ -802,6 +775,85 @@ const STAGE_EMOJI: Record<TicketStage, string> = {
   blocked:    "🚫",
 };
 
+// ── Self-healing AI job runner ────────────────────────────────────────────────
+// Wraps graph.invoke() with: heartbeat, timeout, auto-retry, and ticket reset.
+
+const JOB_TIMEOUT_MS  = 10 * 60 * 1000; // 10 minutes max per run
+const HEARTBEAT_MS    = 90 * 1000;       // notify user after 90s if still running
+const MAX_JOB_RETRIES = 2;               // retry entire graph on transient errors
+
+async function runAIJobWithGuards(ticket: WorkflowTicket, userId: string): Promise<void> {
+  // ── Heartbeat — tell user we're still alive after 90s ────────────────────
+  const heartbeat = setTimeout(async () => {
+    await notifyUser(userId,
+      `⏳ Still working on *#${ticket.issueNumber}*… this one is taking a bit longer than usual.`
+    ).catch(() => {});
+  }, HEARTBEAT_MS);
+
+  try {
+    // ── Auto-retry on transient failures (network, rate limits) ─────────────
+    const result = await withRetry(
+      () => withTimeout(
+        buildGraph().invoke({ ticketKey: String(ticket.issueNumber), autoApprove: true }),
+        JOB_TIMEOUT_MS,
+        `AI job for #${ticket.issueNumber}`
+      ),
+      {
+        maxAttempts: MAX_JOB_RETRIES,
+        baseDelayMs: 5000,
+        label:       `AI job #${ticket.issueNumber}`,
+        retryIf:     isTransientError,
+      }
+    );
+
+    clearTimeout(heartbeat);
+
+    // ── Success — persist PR and transition ──────────────────────────────────
+    const updated = getTicket(ticket.issueNumber) ?? ticket;
+    if (result?.pullRequest) {
+      updated.prNumber = result.pullRequest.number;
+      updated.prUrl    = result.pullRequest.url;
+      saveTicket(updated);
+    }
+    await transitionStage(ticket.issueNumber, "in_review", "ai", "AI finished coding");
+
+    await notifyUser(userId, [
+      `✅ *AI finished coding for #${ticket.issueNumber}: ${ticket.title}*`,
+      updated.prUrl ? `🔀 PR: ${updated.prUrl}` : "",
+      ``,
+      `What would you like to do next?`,
+      `• \`review ${ticket.issueNumber}\` — AI reviews the PR for code quality`,
+      `• \`deploy ${ticket.issueNumber}\` — deploy to staging and start testing`,
+      `• \`close ${ticket.issueNumber}\` — close the ticket as done`,
+    ].filter(Boolean).join("\n"));
+
+  } catch (err) {
+    clearTimeout(heartbeat);
+
+    const errMsg   = err instanceof Error ? err.message : String(err);
+    const isTimeout = errMsg.startsWith("TIMEOUT:");
+    console.error(`[runAIJob] ❌ Job failed for #${ticket.issueNumber}: ${errMsg}`);
+
+    // ── Reset ticket back to backlog so it can be retried ───────────────────
+    try {
+      await transitionStage(ticket.issueNumber, "backlog", "ai", "AI coding failed — reset to backlog");
+    } catch { /* best-effort */ }
+
+    const reason = isTimeout
+      ? `Timed out after ${JOB_TIMEOUT_MS / 60000} minutes`
+      : errMsg.slice(0, 200);
+
+    await notifyUser(userId, [
+      `❌ *AI coding failed for #${ticket.issueNumber}: ${ticket.title}*`,
+      `_Reason: ${reason}_`,
+      ``,
+      `Ticket has been reset to backlog. Options:`,
+      `• \`develop ${ticket.issueNumber}\` — let AI try again`,
+      `• \`i'll do it ${ticket.issueNumber}\` — switch to manual development`,
+    ].join("\n")).catch(() => {});
+  }
+}
+
 // ── Startup recovery — resume in-flight AI dev jobs killed by redeploy ────────
 
 export async function recoverInFlightJobs(): Promise<void> {
@@ -856,30 +908,9 @@ export async function recoverInFlightJobs(): Promise<void> {
 
         await notifyUser(ticket.createdBy, msg);
       } else {
-        // No PR — re-run the agent
+        // No PR — re-run the agent using the same guarded runner
         console.log(`[recovery] No PR for ticket #${ticket.issueNumber} — re-running AI agent`);
-        const graph = buildGraph();
-        graph
-          .invoke({ ticketKey: String(ticket.issueNumber), autoApprove: true })
-          .then(async (result) => {
-            const updated = getTicket(ticket.issueNumber) ?? ticket;
-            if (result?.pullRequest) {
-              updated.prNumber = result.pullRequest.number;
-              updated.prUrl    = result.pullRequest.url;
-              saveTicket(updated);
-            }
-            await transitionStage(ticket.issueNumber, "in_review", "ai", "AI finished coding");
-            const msg = [
-              `✅ *AI finished coding for #${ticket.issueNumber}: ${ticket.title}*`,
-              updated.prUrl ? `🔀 PR: ${updated.prUrl}` : "",
-              `• \`review ${ticket.issueNumber}\` — AI reviews the PR`,
-              `• \`merge ${ticket.issueNumber}\` — merge and deploy`,
-            ].filter(Boolean).join("\n");
-            await notifyUser(ticket.createdBy, msg);
-          })
-          .catch((err: unknown) => {
-            console.warn(`[recovery] Re-run failed for #${ticket.issueNumber}:`, err);
-          });
+        runAIJobWithGuards(ticket, ticket.createdBy);
       }
     } catch (err) {
       console.warn(`[recovery] Failed for ticket #${ticket.issueNumber}:`, err);

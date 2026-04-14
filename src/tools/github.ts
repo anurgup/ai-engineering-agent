@@ -3,6 +3,7 @@ import { simpleGit, SimpleGit } from "simple-git";
 import * as fs from "fs";
 import * as path from "path";
 import { GeneratedFile, PullRequest } from "../agent/state.js";
+import { withRetry } from "./retry.js";
 
 export class GitHubClient {
   private octokit: Octokit;
@@ -166,8 +167,11 @@ export class GitHubClient {
     if (parseInt(ahead.trim(), 10) === 0) {
       throw new Error(`Commit produced no new commits ahead of ${this.baseBranch} — push skipped to avoid empty PR`);
     }
-    await this.git.push("origin", branch, ["--set-upstream", "--force-with-lease"]).catch(() =>
-      this.git.push("origin", branch, ["--set-upstream", "--force"])
+    // Push with retry — force-with-lease first, then force on conflict
+    await withRetry(
+      () => this.git.push("origin", branch, ["--set-upstream", "--force-with-lease"])
+                .catch(() => this.git.push("origin", branch, ["--set-upstream", "--force"])),
+      { label: `push ${branch}`, maxAttempts: 3, baseDelayMs: 2000 }
     );
   }
 
